@@ -1,0 +1,77 @@
+{
+  "track_id": "monza",
+  "track_name": "Autodromo Nazionale Monza",
+  "layout": "GP",
+  "spline_length_m": 5793.0,
+  "sectors": [
+    {
+      "id": 0,
+      "name": "Sector 1",
+      "spline_start": 0.0,
+      "spline_end": 0.33
+    },
+    {
+      "id": 1,
+      "name": "Sector 2",
+      "spline_start": 0.33,
+      "spline_end": 0.67
+    },
+    {
+      "id": 2,
+      "name": "Sector 3",
+      "spline_start": 0.67,
+      "spline_end": 1.0
+    }
+  ],
+  "corners": [
+    {
+      "name": "Prima Variante",
+      "spline_position": 0.08,
+      "spline_range": [0.05, 0.12],
+      "type": "chicane",
+      "notes": "Braking zone from ~330km/h. Late apex chicane."
+    },
+    {
+      "name": "Seconda Variante",
+      "spline_position": 0.22,
+      "spline_range": [0.18, 0.27],
+      "type": "chicane",
+      "notes": "Second chicane. Critical exit for Lesmo approach."
+    },
+    {
+      "name": "Curva Grande",
+      "spline_position": 0.15,
+      "spline_range": [0.13, 0.18],
+      "type": "fast_left",
+      "notes": "High-speed left. Flat in most cars."
+    },
+    {
+      "name": "Lesmo 1",
+      "spline_position": 0.38,
+      "spline_range": [0.35, 0.42],
+      "type": "medium_right",
+      "notes": "Entry speed critical. Links to Lesmo 2."
+    },
+    {
+      "name": "Lesmo 2",
+      "spline_position": 0.45,
+      "spline_range": [0.42, 0.49],
+      "type": "medium_right",
+      "notes": "Exit throttle point defines Serraglio straight speed."
+    },
+    {
+      "name": "Variante Ascari",
+      "spline_position": 0.62,
+      "spline_range": [0.58, 0.67],
+      "type": "chicane",
+      "notes": "Complex chicane. Rhythm is key."
+    },
+    {
+      "name": "Parabolica",
+      "spline_position": 0.85,
+      "spline_range": [0.80, 0.96],
+      "type": "slow_right",
+      "notes": "Decreasing radius. Late apex, maximize exit for main straight."
+    }
+  ]
+}
