@@ -59,6 +59,12 @@ STEERING_THRESHOLD: float = 0.6           # steering normalizado > X
 # Ponto de troca subótimo
 RPM_SHIFT_MARGIN: float = 0.05            # % do maxRpm fora da faixa ótima
 
+# === Supabase — Fase 7 ===
+SUPABASE_ENABLED: bool = os.getenv("SUPABASE_ENABLED", "false").lower() == "true"
+SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")       # service_role key
+SUPABASE_USER_ID: str = os.getenv("SUPABASE_USER_ID", "")  # UUID fixo do piloto
+
 # === TTS — Fase 6 ===
 TTS_PROVIDER: str = os.getenv("TTS_PROVIDER", "none")
 ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")

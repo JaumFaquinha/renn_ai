@@ -72,7 +72,9 @@ class SPageFilePhysics(ctypes.Structure):
         ("roadTemp", c_float),      # Temperatura da pista (°C)
 
         # === Dinâmica no Referencial Local ===
-        ("localVelocity", c_float * 3),     # Velocidade no referencial do carro (m/s)
+        # ATENÇÃO: o SDK oficial coloca localAngularVel DIRETAMENTE após roadTemp.
+        # localVelocity aparece apenas UMA VEZ, no offset 568 (perto do final do struct).
+        # Um campo localVelocity aqui causava drift de +12 bytes em todos os 27 campos abaixo.
         ("localAngularVel", c_float * 3),   # Velocidade angular local (rad/s) — detecta oversteer
 
         # === Performance e Sistemas Avançados ===
@@ -113,8 +115,9 @@ class SPageFilePhysics(ctypes.Structure):
         # === Distribuição de Frenagem ===
         ("brakeBias", c_float),     # Brake bias frente/trás 0.0–1.0
 
-        # === Velocidade Local (duplicata para compatibilidade) ===
-        ("localVelocity2", c_float * 3),
+        # === Velocidade Local no Referencial do Carro ===
+        # Posição correta: offset 568, após brakeBias. Única ocorrência no struct oficial.
+        ("localVelocity", c_float * 3),
 
         # === Multiplayer e Setup ===
         ("playerCarID", c_int),

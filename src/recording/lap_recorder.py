@@ -22,6 +22,7 @@ from config.settings import (
     CAR_DAMAGE_THRESHOLD,
     LAPS_DIR,
     MINI_SECTOR_SIZE,
+    MIN_SECTORS_PER_LAP,
 )
 from src.memory.graphics_page import AC_LIVE
 from src.recording.sector_aggregator import SectorAggregator
@@ -45,8 +46,15 @@ class LapRecorder:
         - _lap_invalid: se True, a volta atual deve ser descartada
     """
 
-    def __init__(self, track_id: str = "unknown") -> None:
+    def __init__(
+        self,
+        track_id: str = "unknown",
+        car_model: str = "unknown",
+        session_type: str = "practice",
+    ) -> None:
         self._track_id = track_id
+        self._car_model = car_model
+        self._session_type = session_type
         self._aggregator = SectorAggregator()
         self._current_lap: list[dict] = []
         self._sector_buffer: list[dict] = []
@@ -54,6 +62,7 @@ class LapRecorder:
         self._lap_invalid: bool = False
         self._lap_number: int = 0
         self._session_start_ts: int = int(time.time())
+        self._current_tyre_compound: str = "unknown"
 
         LAPS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -70,6 +79,11 @@ class LapRecorder:
         """
         if snapshot_dict.get("_status") != AC_LIVE:
             return None
+
+        # Atualiza composto de pneu a cada snapshot (muda após pit stop)
+        tyre_compound = snapshot_dict.get("_tyre_compound")
+        if tyre_compound:
+            self._current_tyre_compound = tyre_compound
 
         position = snapshot_dict["track_position"]
 
@@ -136,8 +150,6 @@ class LapRecorder:
             return True
         if snapshot.get("_pit_limiter_on") == 1:
             return True
-        if snapshot.get("_number_of_tyres_out", 0) > 0:
-            return True
         if snapshot.get("_is_ai_controlled") == 1:
             return True
         if snapshot.get("_car_damage_max", 0.0) > CAR_DAMAGE_THRESHOLD:
@@ -173,6 +185,17 @@ class LapRecorder:
         if not self._current_lap:
             return None
 
+        if len(self._current_lap) < MIN_SECTORS_PER_LAP:
+            logger.info(
+                "Volta descartada — mini-setores insuficientes",
+                extra={
+                    "lap_number": self._lap_number,
+                    "sectors": len(self._current_lap),
+                    "min_required": MIN_SECTORS_PER_LAP,
+                },
+            )
+            return None
+
         # Calcular tempo da volta a partir dos snapshots
         first = self._current_lap[0]
         last = self._current_lap[-1]
@@ -181,6 +204,9 @@ class LapRecorder:
         lap_data = {
             "lap_number": self._lap_number,
             "track_id": self._track_id,
+            "car_model": self._car_model,
+            "session_type": self._session_type,
+            "tyre_compound": self._current_tyre_compound,
             "lap_time_ms": lap_time_ms,
             "sector_count": len(self._current_lap),
             "mini_sectors": self._current_lap,

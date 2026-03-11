@@ -22,5 +22,8 @@ ruff==0.6.9
 # elevenlabs==1.5.0
 # azure-cognitiveservices-speech==1.40.0
 
+# Persistência — Fase 7 (Supabase)
+supabase==2.10.0
+
 # Utilitários
 python-dotenv==1.0.1

@@ -350,6 +350,9 @@ def snapshot_to_dict(snapshot: TelemetrySnapshot) -> dict:
         "air_temp": p.airTemp,
         "road_temp": p.roadTemp,
 
+        # --- Metadado de contexto da volta (não gravado no mini-setor, usado pelo LapRecorder) ---
+        "_tyre_compound": g.tyreCompound,
+
         # --- Campos de validação (não gravados no schema de mini-setor) ---
         "_status": g.status,
         "_flag": g.flag,
