@@ -13,6 +13,7 @@ tensorboard==2.17.0
 
 # ML — SectorModel (Módulo B, Fase 8)
 scikit-learn>=1.3.0            # GradientBoostingRegressor + StandardScaler + joblib
+numpy>=2.4.3
 
 # Qualidade e testes
 pytest==8.3.3
