@@ -22,11 +22,12 @@ from pathlib import Path
 # Adiciona o root do projeto ao path para imports relativos funcionarem
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config.settings import LOG_LEVEL, SAMPLING_RATE_HZ
+from config.settings import LOG_LEVEL, MODELS_DIR, SAMPLING_RATE_HZ
 from src.analysis.lap_analyzer import LapAnalyzer
 from src.analysis.pattern_detector import PatternDetector
 from src.analysis.report_builder import ReportBuilder
 from src.memory.shared_memory_reader import SharedMemoryReader, snapshot_to_dict
+from src.models.sector_model import SectorModel
 from src.output.console_reporter import ConsoleReporter
 from src.output.tts_integration import TTSIntegration
 from src.persistence.supabase_client import SupabaseClient
@@ -145,6 +146,21 @@ def run(track_id: str, rate_hz: int) -> None:
             session_type=session_type_str,
         )
 
+        # Carregar SectorModel treinado (se disponível para esta pista)
+        sector_model = SectorModel(track_id=track_id)
+        model_path = MODELS_DIR / f"{track_id}.pkl"
+        if sector_model.load(str(model_path)):
+            logger.info(
+                "SectorModel carregado",
+                extra={"track_id": track_id, "n_sectors": sector_model.n_training_sectors},
+            )
+        else:
+            logger.info(
+                "SectorModel não encontrado para esta pista — sem scores de anomalia. "
+                "Execute scripts/train_model.py --track %s após coletar voltas.",
+                track_id,
+            )
+
         logger.info(
             "Conectado ao AC",
             extra={
@@ -225,11 +241,18 @@ def run(track_id: str, rate_hz: int) -> None:
                             for i, sector in enumerate(analyzed)
                         }
 
+                        # Scores de anomalia do SectorModel (em lote — 1 chamada numpy)
+                        model_scores: dict[int, float] = {}
+                        if sector_model.is_trained:
+                            batch_scores = sector_model.predict_batch(analyzed)
+                            model_scores = dict(enumerate(batch_scores))
+
                         lap_report = report_builder.build(
                             lap_number=completed_lap["lap_number"],
                             lap_time_ms=current_lap_time,
                             analyzed_sectors=analyzed,
                             pattern_results=pattern_results,
+                            model_scores=model_scores,
                         )
 
                         # Busca histórico de delta por setor (Fase 7D)

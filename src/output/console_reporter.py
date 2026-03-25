@@ -92,6 +92,12 @@ class ConsoleReporter:
             f"      Vel. mín.  : {sector.speed_min_kmh:.1f} km/h",
         ]
 
+        if sector.model_score is not None:
+            score_bar = self._confidence_bar(sector.model_score)
+            lines.append(
+                f"      Modelo IA  : [{score_bar}] {sector.model_score:.0%}  anomalia prevista"
+            )
+
         if sector.causes:
             lines.append(f"      Causas     :")
             for match in sector.causes:

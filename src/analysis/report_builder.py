@@ -34,6 +34,7 @@ class SectorReport:
     causes: list[PatternMatch]
     corner_name: Optional[str] = None
     corner_type: Optional[str] = None
+    model_score: Optional[float] = None  # Anomaly score do SectorModel 0.0–1.0
 
 
 @dataclass
@@ -66,6 +67,7 @@ class ReportBuilder:
         analyzed_sectors: list[dict],
         pattern_results: dict[int, list[PatternMatch]],
         n_top: int = TOP_SECTORS_TO_REPORT,
+        model_scores: Optional[dict[int, float]] = None,
     ) -> LapReport:
         """
         Constrói o relatório completo da volta.
@@ -78,7 +80,8 @@ class ReportBuilder:
             n_top: número de setores a incluir no relatório
 
         Returns:
-            LapReport com os N setores de maior perda e suas causas.
+            LapReport com os N setores de maior perda, suas causas
+            e model_score quando SectorModel disponível.
         """
         # Ordenar por perda e pegar os N maiores
         sorted_sectors = sorted(
@@ -106,6 +109,7 @@ class ReportBuilder:
                     causes=causes,
                     corner_name=corner.get("name") if corner else None,
                     corner_type=corner.get("type") if corner else None,
+                    model_score=model_scores.get(idx) if model_scores else None,
                 )
             )
 

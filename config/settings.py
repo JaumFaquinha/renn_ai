@@ -20,7 +20,7 @@ MODELS_DIR: Path = DATA_DIR / "models"
 TRACK_MAPS_DIR: Path = ROOT_DIR / "config" / "track_maps"
 
 # === Sampling ===
-SAMPLING_RATE_HZ: int = 20          # Frequência de leitura da Shared Memory
+SAMPLING_RATE_HZ: int = int(os.getenv("SAMPLING_RATE_HZ", "20"))  # Frequência de leitura da Shared Memory
 MINI_SECTOR_SIZE: float = 0.01      # Tamanho de mini-setor em spline normalizada (~1% da pista)
 
 # === Campos da Shared Memory ===
@@ -32,7 +32,7 @@ PERFORMANCE_METER_FIELD: str = "performanceMeter"
 CAR_DAMAGE_THRESHOLD: float = float(os.getenv("CAR_DAMAGE_THRESHOLD", "0.1"))
 
 # Número mínimo de mini-setores para uma volta ser considerada válida
-MIN_SECTORS_PER_LAP: int = 80       # ~80% da pista mínimo
+MIN_SECTORS_PER_LAP: int = int(os.getenv("MIN_SECTORS_PER_LAP", "80"))  # ~80% da pista mínimo
 
 # === Análise ===
 # Número de top setores com maior perda a destacar no relatório

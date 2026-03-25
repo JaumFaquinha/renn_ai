@@ -1,0 +1,123 @@
+{
+  "track_id": "monza",
+  "track_name": "Autodromo Nazionale Monza",
+  "layout": "GP",
+  "spline_length_m": 5793.0,
+  "source": "Calculado a partir de dados oficiais FIA/Kunos: comprimento 5793m, reta principal 1194m. Posições normalizadas baseadas em distâncias reais de cada zona de frenagem. Validar e ajustar com map_track.py --track monza --resume após sessão real no AC.",
+  "sectors": [
+    {
+      "id": 0,
+      "name": "Setor 1",
+      "spline_start": 0.0,
+      "spline_end": 0.2693,
+      "description": "T/F → saída da Variante della Roggia. Reta principal + duas chicanes + Curva Grande."
+    },
+    {
+      "id": 1,
+      "name": "Setor 2",
+      "spline_start": 0.2693,
+      "spline_end": 0.6715,
+      "description": "Lesmo 1 → Lesmo 2 → Serraglio → saída da Variante Ascari."
+    },
+    {
+      "id": 2,
+      "name": "Setor 3",
+      "spline_start": 0.6715,
+      "spline_end": 1.0,
+      "description": "Parabolica completa + reta principal até T/F."
+    }
+  ],
+  "corners": [
+    {
+      "name": "Variante del Rettifilo",
+      "alt_name": "Prima Variante",
+      "turns": "T1-T2",
+      "spline_position": 0.1139,
+      "spline_range": [0.0975, 0.1364],
+      "type": "chicane",
+      "direction": "right-left",
+      "braking_distance_m": 125,
+      "entry_speed_kmh": 335,
+      "min_speed_kmh": 70,
+      "notes": "Zona de frenagem mais intensa do circuito. Referência de frenagem: placa 150m no lado esquerdo. Ponto de apex: meio-fio direito (T1) antes de cortar para esquerda (T2). Erro clássico: freio tardio com bloqueio ou freio muito cedo comprometendo velocidade na Curva Grande."
+    },
+    {
+      "name": "Curva Grande",
+      "alt_name": null,
+      "turns": "T3",
+      "spline_position": 0.1571,
+      "spline_range": [0.1433, 0.1700],
+      "type": "fast_left",
+      "direction": "left",
+      "braking_distance_m": 0,
+      "entry_speed_kmh": 290,
+      "min_speed_kmh": 260,
+      "notes": "Curva de alta velocidade, praticamente plana na maioria dos GT3 e open-wheel. Exige commitamento total. Leve compressão na entrada. Erro clássico: levantar parcialmente o acelerador por falta de confiança — custa tempo na abordagem da Roggia."
+    },
+    {
+      "name": "Variante della Roggia",
+      "alt_name": "Seconda Variante",
+      "turns": "T4-T5",
+      "spline_position": 0.2313,
+      "spline_range": [0.2054, 0.2693],
+      "type": "chicane",
+      "direction": "right-left",
+      "braking_distance_m": 90,
+      "entry_speed_kmh": 290,
+      "min_speed_kmh": 85,
+      "notes": "Segunda chicane. Frenagem menos intensa que a Prima Variante. Saída crítica: throttle progressivo logo após o apex do T5 define a velocidade na reta que leva ao Lesmo 1. Erro clássico: aceleração prematura com rodas traseiras perdendo tração (TC ativo)."
+    },
+    {
+      "name": "Curva di Lesmo 1",
+      "alt_name": "Lesmo 1",
+      "turns": "T6",
+      "spline_position": 0.3573,
+      "spline_range": [0.3349, 0.3884],
+      "type": "medium_right",
+      "direction": "right",
+      "braking_distance_m": 65,
+      "entry_speed_kmh": 270,
+      "min_speed_kmh": 145,
+      "notes": "Direita de velocidade média. Entrada relativamente tarde (apex tardio). A velocidade de saída define diretamente o ritmo na ligação com o Lesmo 2. Erro clássico: entrada muito ampla compromete a linha do Lesmo 2 — as duas curvas devem ser tratadas como um complexo."
+    },
+    {
+      "name": "Curva di Lesmo 2",
+      "alt_name": "Lesmo 2",
+      "turns": "T7",
+      "spline_position": 0.4281,
+      "spline_range": [0.4005, 0.4557],
+      "type": "medium_right",
+      "direction": "right",
+      "braking_distance_m": 40,
+      "entry_speed_kmh": 240,
+      "min_speed_kmh": 150,
+      "notes": "Curva direita encadeada ao Lesmo 1. Saída absolutamente crítica: máxima velocidade aqui define a velocidade no fim da reta do Serraglio (450m). Throttle completo imediatamente após apex. Erro clássico: saída comprometida por excesso de ângulo de volante — motor subaproveitado na reta longa."
+    },
+    {
+      "name": "Variante Ascari",
+      "alt_name": null,
+      "turns": "T8-T9-T10",
+      "spline_position": 0.6301,
+      "spline_range": [0.5766, 0.6715],
+      "type": "chicane",
+      "direction": "right-left-right",
+      "braking_distance_m": 80,
+      "entry_speed_kmh": 310,
+      "min_speed_kmh": 100,
+      "notes": "Complexo de três curvas em sequência: direita lenta (T8) → esquerda rápida (T9) → direita de saída (T10). Ritmo é a chave — não tentar recuperar tempo individualmente em cada curva. T10 determina velocidade de entrada na Parabolica. Erro clássico: freio muito tarde no T8 quebra o ritmo do complexo inteiro."
+    },
+    {
+      "name": "Parabolica",
+      "alt_name": "Curva Alboreto",
+      "turns": "T11",
+      "spline_position": 0.8579,
+      "spline_range": [0.7846, 0.9425],
+      "type": "slow_right",
+      "direction": "right",
+      "braking_distance_m": 100,
+      "entry_speed_kmh": 295,
+      "min_speed_kmh": 88,
+      "notes": "A curva mais importante do circuito para o tempo de volta. Raio decrescente — apex muito tardio, na segunda metade da curva. Throttle progressivo a partir do apex: velocidade de saída se propaga por toda a reta principal (1194m). Sacrificar a entrada para maximizar a saída. Erro clássico: apex precoce força undershooting na saída e throttle parcial na reta — custa até 0.3s/volta."
+    }
+  ]
+}

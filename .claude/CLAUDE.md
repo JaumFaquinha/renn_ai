@@ -181,6 +181,7 @@ racing_engineer_ia/
 | `surfaceGrip` | SPageFileGraphic | float | ⚡ **ADICIONADO** — Grip evoluindo na sessão; normaliza wheelSlip entre voltas |
 | `airTemp` | SPageFilePhysics | float | Temperatura ambiente da sessão |
 | `roadTemp` | SPageFilePhysics | float | Temperatura do asfalto |
+| `tyreCompound[33]` | SPageFileGraphic | wchar_t | ⚡ **ADICIONADO** — Composto ativo (SM/MS/SS/H etc.); metadado de volta (`laps.tyre_compound`), não de mini-setor. Propagado via `_tyre_compound` no snapshot. Essencial para que PatternDetector ajuste limiares por composto futuramente. |
 
 ---
 
@@ -222,7 +223,11 @@ Lidos uma vez ao iniciar a sessão. Não variam por mini-setor.
 | `penaltiesEnabled` | SPageFileStatic | Contexto de validade de cortes |
 | `completedLaps` | SPageFileGraphic | Número de voltas completadas na sessão |
 | `sessionTimeLeft` | SPageFileGraphic | Contexto de fim de sessão |
-| `session` | SPageFileGraphic | Tipo: treino, qualificação, corrida, hotlap |
+| `session` | SPageFileGraphic | Tipo: treino, qualificação, corrida, hotlap — lido via `_session_int_to_str()` e gravado em `sessions.session_type` |
+| `aidAutoClutch` | SPageFileStatic | int | Se ativo, o campo `clutch` nos mini-setores reflete o jogo, não o piloto. Logar warning no início da sessão. |
+| `aidStability` | SPageFileStatic | float | Contextualiza comportamentos de oversteer/understeer interpretados pelo PatternDetector. |
+| `drsEnabled` | SPageFilePhysics | int | Indica se DRS está habilitado pelo race director (distinto de `drs` = flap aberto e `drsAvailable` = em zona). |
+| `tyreRadius[4]` | SPageFileStatic | float[4] | Raio do pneu por roda (m) — necessário para calcular slip ratio real via `wheelAngularSpeed[4]` (escopo futuro 4.4). |
 
 ---
 
@@ -244,6 +249,10 @@ Disponíveis para expansão sem necessidade de regravar sessões antigas.
 ---
 
 ### 4.5 Schema de Gravação por Mini-Setor (Atualizado)
+
+> **Nota:** `speed_min` é um **campo computado** (mínimo de `speedKmh` dentro do mini-setor), não um campo da Shared Memory. Não deve ser confundido com um campo lido via mmap.
+>
+> **Nota:** `tyre_compound` é um **metadado de volta** gravado em `laps.tyre_compound`, não nos mini-setores. Um composto não muda dentro de uma mesma volta.
 
 ```json
 {
@@ -305,6 +314,26 @@ Disponíveis para expansão sem necessidade de regravar sessões antigas.
 | `replayTimeMultiplier` | Controle de replay |
 | `playerName`, `playerSurname`, `playerNick` | Metadados do jogador |
 | `deprecated_1`, `deprecated_2` | Obsoletos — documentados para não uso |
+| `smVersion[15]`, `acVersion[15]` | SPageFileStatic | Versões de compatibilidade — lidas pelo struct mas sem uso analítico |
+| `aidFuelRate`, `aidTireRate`, `aidMechanicalDamage` | SPageFileStatic | Parâmetros de simulação do AC — afetam o carro, não o piloto |
+| `allowTyreBlankets` | SPageFileStatic | Configuração de aquecimento de pneus — contexto de setup |
+| `aidAutoBlip` | SPageFileStatic | Auto-blip de trocas — confunde análise de clutch, mas sem modelo de clutch ativo por enquanto |
+| `kersMaxJ`, `ersMaxJ`, `engineBrakeSettingsCount`, `ersPowerControllerCount` | SPageFileStatic | Capacidades de sistemas avançados do carro — sem uso no modelo atual |
+| `maxFuel` | SPageFileStatic | Capacidade máxima de combustível — relevante apenas se `fuel` for adicionado ao pipeline |
+| `suspensionMaxTravel[4]` | SPageFileStatic | Dado de geometria de setup |
+| `isTimedRace`, `hasExtraLap`, `reversedGridPositions` | SPageFileStatic | Variantes de formato de corrida — sem impacto na análise de piloto |
+| `carSkin[33]`, `isOnline`, `numCars`, `numberOfSessions` | SPageFileStatic | Metadados de sessão/visual |
+| `PitWindowStart`, `PitWindowEnd` | SPageFileStatic | Estratégia de corrida — fora do escopo do Módulo B |
+| `numberOfLaps` | SPageFileGraphic | Total de voltas da sessão — contexto de formato, não de piloto |
+| `idealLineOn` | SPageFileGraphic | Estado da UI — irrelevante para telemetria |
+| `mandatoryPitDone` | SPageFileGraphic | Estratégia de pit — fora do escopo do Módulo B |
+| `isSetupMenuVisible`, `mainDisplayIndex`, `secondaryDisplayIndex` | SPageFileGraphic | Estado da UI |
+| `TC`, `TCLEVEL`, `trackGripStatus` | SPageFileGraphic | Estado da UI do TC — redundante com `tc` da physics |
+| `rainLights`, `flashingLights`, `lightsStage`, `wiperLV` | SPageFileGraphic | Estado de luzes e limpadores |
+| `exhaustTemperature` | SPageFileGraphic | Estado térmico do carro |
+| `driverStintTotalTimeLeft`, `driverStintTimeLeft` | SPageFileGraphic | Tempo de stint (endurance) — fora do escopo atual |
+| `rainTyres` | SPageFileGraphic | Tipo de pneu para chuva — coberto por `tyreCompound` |
+| `playerCarID`, `pitLimiterSpeed` | SPageFilePhysics | Identificador interno e velocidade de pit limiter — sem uso analítico |
 
 ---
 
