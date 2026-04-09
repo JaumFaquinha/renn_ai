@@ -346,13 +346,32 @@ def main() -> None:
         logger.error("Treino falhou — verifique os logs acima")
         sys.exit(1)
 
-    # 3. Avaliar confiabilidade
-    metrics = evaluate_model(model, laps)
+    # 3. Avaliar confiabilidade — usa apenas voltas limpas (sem clutch corrompido)
+    #    para evitar métricas distorcidas por dados fora do range do scaler.
+    _CLUTCH_FIELD = "clutch"
+    _CLUTCH_MAX = 1.0
+    clean_laps_for_eval = [
+        lap for lap in laps
+        if not any(
+            float(s.get(_CLUTCH_FIELD, 0.0)) > _CLUTCH_MAX
+            for s in lap.get("mini_sectors", [])
+        )
+    ]
+    metrics = evaluate_model(model, clean_laps_for_eval)
+
+    n_discarded_clutch = model.n_discarded_clutch_laps
+    n_discarded_outliers = model.n_discarded_outlier_sectors
+
     print("\n" + "─" * 60)
     print(f"  SECTOR MODEL — {track_id.upper()}")
     print("─" * 60)
-    print(f"  Voltas de treino   : {len(laps)}")
-    print(f"  Mini-setores       : {metrics.get('n_sectors', model.n_training_sectors)}")
+    print(f"  Voltas carregadas  : {len(laps)}")
+    if n_discarded_clutch > 0:
+        print(f"  Voltas descartadas : {n_discarded_clutch} (clutch corrompido)")
+    print(f"  Voltas usadas      : {len(clean_laps_for_eval)}")
+    if n_discarded_outliers > 0:
+        print(f"  Setores descartados: {n_discarded_outliers} (|delta| > 60s)")
+    print(f"  Mini-setores       : {model.n_training_sectors}")
     print(f"  MAE (delta)        : {metrics.get('mae_s', '—')}s")
     print(f"  R²                 : {metrics.get('r2', '—')}")
     print(f"  Correlação Pearson : {metrics.get('pearson_correlation', '—')}")

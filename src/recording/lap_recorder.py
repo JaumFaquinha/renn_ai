@@ -20,6 +20,7 @@ from typing import Optional
 
 from config.settings import (
     CAR_DAMAGE_THRESHOLD,
+    CLUTCH_MAX_VALUE,
     LAPS_DIR,
     MINI_SECTOR_SIZE,
     MIN_SECTORS_PER_LAP,
@@ -143,7 +144,12 @@ class LapRecorder:
 
     @staticmethod
     def _is_snapshot_invalid(snapshot: dict) -> bool:
-        """Verifica se o snapshot atende aos critérios de descarte (§4.2)."""
+        """Verifica se o snapshot atende aos critérios de descarte (§4.2).
+
+        Inclui detecção de clutch corrompido: o campo deve ser 0.0–1.0 conforme
+        o AC SDK. Valores acima de CLUTCH_MAX_VALUE indicam offset errado na leitura
+        da Shared Memory (bug identificado no relatório de validação 2026-04-08).
+        """
         if snapshot.get("_is_in_pit") == 1:
             return True
         if snapshot.get("_is_in_pit_lane") == 1:
@@ -155,6 +161,9 @@ class LapRecorder:
         if snapshot.get("_car_damage_max", 0.0) > CAR_DAMAGE_THRESHOLD:
             return True
         if snapshot.get("_penalty_time", 0.0) > 0.0:
+            return True
+        # Clutch fora do range 0–1 indica leitura corrompida da Shared Memory
+        if snapshot.get("clutch", 0.0) > CLUTCH_MAX_VALUE:
             return True
         return False
 

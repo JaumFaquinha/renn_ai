@@ -34,6 +34,13 @@ CAR_DAMAGE_THRESHOLD: float = float(os.getenv("CAR_DAMAGE_THRESHOLD", "0.1"))
 # Número mínimo de mini-setores para uma volta ser considerada válida
 MIN_SECTORS_PER_LAP: int = int(os.getenv("MIN_SECTORS_PER_LAP", "80"))  # ~80% da pista mínimo
 
+# === Validação de Telemetria ===
+# Clutch do AC é 0.0–1.0; valores acima indicam campo corrompido (bug de offset)
+CLUTCH_MAX_VALUE: float = float(os.getenv("CLUTCH_MAX_VALUE", "1.0"))
+
+# delta_vs_best acima deste limiar (segundos) indica bug de sessão ou volta inválida
+DELTA_OUTLIER_THRESHOLD_S: float = float(os.getenv("DELTA_OUTLIER_THRESHOLD_S", "60.0"))
+
 # === Análise ===
 # Número de top setores com maior perda a destacar no relatório
 TOP_SECTORS_TO_REPORT: int = 5
