@@ -158,6 +158,9 @@ class LapRecorder:
             return True
         if snapshot.get("_is_ai_controlled") == 1:
             return True
+        # Pneus fora da pista — carro em gravel/relva, setor inválido (CLAUDE.md §4.2)
+        if snapshot.get("_number_of_tyres_out", 0) > 0:
+            return True
         if snapshot.get("_car_damage_max", 0.0) > CAR_DAMAGE_THRESHOLD:
             return True
         if snapshot.get("_penalty_time", 0.0) > 0.0:

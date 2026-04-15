@@ -59,7 +59,8 @@ class TestSupabaseClientMissingConfig:
     def test_disabled_when_url_missing(self, monkeypatch):
         monkeypatch.setenv("SUPABASE_ENABLED", "true")
         monkeypatch.setenv("SUPABASE_KEY", "some-key")
-        # URL não definida
+        # Força URL vazia via setenv — load_dotenv() não sobrescreve vars já presentes
+        monkeypatch.setenv("SUPABASE_URL", "")
         import importlib
         import config.settings as s
         importlib.reload(s)

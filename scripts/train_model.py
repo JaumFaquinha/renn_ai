@@ -188,7 +188,8 @@ def load_laps_from_supabase(
             sectors_result = (
                 sb.table("mini_sectors")
                 .select(
-                    "track_position, delta_vs_best, throttle, brake, steering, "
+                    "track_position, delta_vs_best, delta_per_sector, "
+                    "throttle, brake, steering, "
                     "gear, rpms, clutch, speed_kmh, speed_min, "
                     "gforce_x, gforce_y, gforce_z, "
                     "local_ang_vel_x, local_ang_vel_y, local_ang_vel_z, "
@@ -232,11 +233,16 @@ def evaluate_model(model: SectorModel, lap_data: list[dict]) -> dict:
     Avalia a confiabilidade do modelo treinado.
 
     Métricas calculadas:
-        - mae: Mean Absolute Error na predição de delta_vs_best
+        - mae: Mean Absolute Error na predição de delta_per_sector
         - r2: coeficiente de determinação (R²)
         - correlation: correlação de Pearson entre score e delta real
         - high_loss_precision: % dos top-10% setores por delta real
                                que o modelo ranqueia no top-10% por score
+
+    O target de comparação é "delta_per_sector" (perda por mini-setor).
+    Para dados históricos sem esse campo, o valor é computado retroativamente
+    como a diferença entre delta_vs_best de setores consecutivos na mesma volta
+    — mesma lógica do SectorModel.train().
 
     Args:
         model: SectorModel já treinado
@@ -251,15 +257,38 @@ def evaluate_model(model: SectorModel, lap_data: list[dict]) -> dict:
     except ImportError:
         return {}
 
-    all_sectors = []
+    # Extrair setores com target correto (delta_per_sector)
+    # Aplica a mesma lógica retroativa do SectorModel.train() para garantir
+    # que os deltas comparados são os mesmos usados durante o treino.
+    all_sectors: list[dict] = []
+    all_targets: list[float] = []
+
     for lap in lap_data:
-        all_sectors.extend(lap.get("mini_sectors", []))
+        lap_sectors = lap.get("mini_sectors", [])
+        prev_dvb: float | None = None
+
+        for sector in lap_sectors:
+            if "delta_per_sector" in sector:
+                target = float(sector["delta_per_sector"])
+            elif "delta_vs_best" in sector:
+                curr_dvb = float(sector["delta_vs_best"])
+                if prev_dvb is None:
+                    prev_dvb = curr_dvb
+                    continue
+                target = curr_dvb - prev_dvb
+                prev_dvb = curr_dvb
+            else:
+                prev_dvb = None
+                continue
+
+            all_sectors.append(sector)
+            all_targets.append(target)
 
     if not all_sectors:
         return {}
 
     scores = model.predict_batch(all_sectors)
-    deltas = [float(s.get("delta_vs_best", 0.0)) for s in all_sectors]
+    deltas = all_targets
 
     scores_arr = np.array(scores)
     deltas_arr = np.array(deltas)
@@ -372,7 +401,7 @@ def main() -> None:
     if n_discarded_outliers > 0:
         print(f"  Setores descartados: {n_discarded_outliers} (|delta| > 60s)")
     print(f"  Mini-setores       : {model.n_training_sectors}")
-    print(f"  MAE (delta)        : {metrics.get('mae_s', '—')}s")
+    print(f"  MAE (delta/setor)  : {metrics.get('mae_s', '—')}s")
     print(f"  R²                 : {metrics.get('r2', '—')}")
     print(f"  Correlação Pearson : {metrics.get('pearson_correlation', '—')}")
     print(f"  Precision@10%      : {metrics.get('precision_at_10pct', '—')}")

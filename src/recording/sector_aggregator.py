@@ -3,6 +3,13 @@ SectorAggregator — FASE 2
 
 Agrega múltiplos snapshots brutos de telemetria em um único mini-setor
 representativo, aplicando as funções de agregação adequadas por campo.
+
+Campos computados (não presentes na Shared Memory, calculados aqui):
+    delta_per_sector: variação de delta_vs_best entre o primeiro e último
+                      snapshot do mini-setor. Representa a perda de tempo
+                      ocorrida DENTRO deste mini-setor específico — é o
+                      target correto para o SectorModel (não o delta
+                      acumulado desde o início da volta).
 """
 
 import logging
@@ -20,7 +27,7 @@ _MEAN_FIELDS = [
     "tc_active", "abs_active",
     "brake_bias", "surface_grip",
     "air_temp", "road_temp",
-    "delta_vs_best",
+    "delta_vs_best",  # mantido para compatibilidade retroativa e debug
 ]
 
 # Campos que usam o valor mínimo (velocidade mínima no setor = indicador de ponto de freio)
@@ -94,6 +101,35 @@ class SectorAggregator:
         for field in _VALIDATION_FIELDS:
             if field in last:
                 result[field] = last[field]
+
+        # ------------------------------------------------------------------
+        # Campo computado: delta_per_sector
+        #
+        # Diferença entre o delta_vs_best do último e do primeiro snapshot
+        # dentro deste buffer. Captura exatamente quanto tempo foi ganho ou
+        # perdido durante a passagem por este mini-setor.
+        #
+        # Por que não usar a média (já em _MEAN_FIELDS)?
+        #   A média do delta_vs_best dentro do setor representa o delta
+        #   "típico" durante a passagem — mas o que importa para o modelo é
+        #   a MUDANÇA: o piloto ficou mais próximo ou mais distante do
+        #   melhor tempo enquanto percorria este 1% da pista?
+        #
+        # Nota: snapshots com delta_vs_best ausente ou inválido (ex: primeira
+        # volta sem referência → performanceMeter = -inf) resultam em 0.0.
+        # O filtro _DELTA_OUTLIER_THRESHOLD_S no SectorModel descarta outliers.
+        # ------------------------------------------------------------------
+        dvb_values = [
+            s["delta_vs_best"]
+            for s in snapshots
+            if "delta_vs_best" in s and s["delta_vs_best"] is not None
+        ]
+        if len(dvb_values) >= 2:
+            result["delta_per_sector"] = dvb_values[-1] - dvb_values[0]
+        elif len(dvb_values) == 1:
+            result["delta_per_sector"] = 0.0
+        # Se nenhum snapshot tem delta_vs_best, delta_per_sector é omitido
+        # (o SectorModel vai ignorar este setor como sem target válido).
 
         return result
 

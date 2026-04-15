@@ -53,8 +53,9 @@ CREATE TABLE IF NOT EXISTS mini_sectors (
     lap_id          UUID NOT NULL REFERENCES laps(id) ON DELETE CASCADE,
 
     -- Posição e delta
-    track_position  FLOAT NOT NULL,
-    delta_vs_best   FLOAT,
+    track_position   FLOAT NOT NULL,
+    delta_vs_best    FLOAT,
+    delta_per_sector FLOAT,             -- diff primeiro→último snapshot no mini-setor (target do SectorModel)
 
     -- Inputs do piloto
     throttle        FLOAT,
@@ -236,3 +237,10 @@ ALTER TABLE mini_sectors
 -- que usava thresholds fixos sem distinguir entre compostos diferentes.
 -- Idempotente: ADD COLUMN IF NOT EXISTS é no-op se a coluna já existir.
 ALTER TABLE laps ADD COLUMN IF NOT EXISTS tyre_compound TEXT;
+
+-- Migration: adiciona delta_per_sector à tabela mini_sectors (2026-04-14)
+-- Contexto: substitui a computação retroativa (diff entre médias de setores consecutivos)
+-- pelo valor preciso calculado intra-setor pelo SectorAggregator (dvb_last - dvb_first).
+-- Dados históricos sem essa coluna continuam utilizáveis via retrocomputação em train_model.py.
+-- Idempotente: ADD COLUMN IF NOT EXISTS é no-op se a coluna já existir.
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS delta_per_sector FLOAT;

@@ -143,6 +143,45 @@ class TestSectorAggregator:
         result = agg.aggregate(snaps)
         assert result["track_position"] == pytest.approx(0.11)
 
+    def test_aggregate_delta_per_sector_is_last_minus_first(self):
+        """
+        delta_per_sector deve ser a diferença entre o último e o primeiro
+        snapshot em delta_vs_best — captura a perda ocorrida no mini-setor.
+        """
+        agg = SectorAggregator()
+        snaps = [
+            {**make_snapshot(0.10), "delta_vs_best": 1.0},
+            {**make_snapshot(0.10), "delta_vs_best": 1.15},
+            {**make_snapshot(0.10), "delta_vs_best": 1.25},
+        ]
+        result = agg.aggregate(snaps)
+        assert "delta_per_sector" in result
+        assert result["delta_per_sector"] == pytest.approx(0.25)  # 1.25 - 1.0
+
+    def test_aggregate_delta_per_sector_negative_when_gaining(self):
+        """delta_per_sector negativo indica setor onde o piloto ganhou tempo."""
+        agg = SectorAggregator()
+        snaps = [
+            {**make_snapshot(0.20), "delta_vs_best": 2.0},
+            {**make_snapshot(0.20), "delta_vs_best": 1.9},  # ganhou 0.1s
+        ]
+        result = agg.aggregate(snaps)
+        assert result["delta_per_sector"] == pytest.approx(-0.1)
+
+    def test_aggregate_delta_per_sector_zero_for_single_snapshot(self):
+        """Com apenas um snapshot, delta_per_sector é 0.0 (sem variação)."""
+        agg = SectorAggregator()
+        snap = {**make_snapshot(0.05), "delta_vs_best": 3.0}
+        result = agg.aggregate([snap])
+        assert result["delta_per_sector"] == pytest.approx(0.0)
+
+    def test_aggregate_delta_per_sector_absent_without_delta_vs_best(self):
+        """Sem delta_vs_best nos snapshots, delta_per_sector não deve aparecer."""
+        agg = SectorAggregator()
+        snap = {k: v for k, v in make_snapshot(0.05).items() if k != "delta_vs_best"}
+        result = agg.aggregate([snap])
+        assert "delta_per_sector" not in result
+
 
 # ---------------------------------------------------------------------------
 # Testes do LapRecorder — validação de volta

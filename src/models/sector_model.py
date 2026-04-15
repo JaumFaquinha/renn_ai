@@ -25,10 +25,15 @@ logger = logging.getLogger(__name__)
 # Features usadas pelo modelo — subset estável do schema CLAUDE.md §4.5
 # track_position é crítico: normaliza o comportamento esperado por zona da pista
 #
-# REMOVIDO (2026-04-08, relatório de validação):
+# REMOVIDO (2026-04-08, relatório de validação v2):
 #   brake_bias — constante de setup por sessão, não varia por mini-setor.
 #                Alta importância (13.5%) era artefato de data leakage por sessão,
 #                não correlação real com performance do piloto.
+#
+# REMOVIDO (2026-04-14, relatório de validação v3):
+#   surface_grip — constante em todas as sessões analisadas (mean=1.0, std≈0).
+#                  Feature importance = 0.0 em todos os modelos treinados.
+#                  Ocupa posição no scaler sem qualquer ganho analítico.
 # ---------------------------------------------------------------------------
 _FEATURE_FIELDS: list[str] = [
     "track_position",
@@ -39,23 +44,47 @@ _FEATURE_FIELDS: list[str] = [
     "local_ang_vel_x", "local_ang_vel_y", "local_ang_vel_z",
     "wheel_slip_fl", "wheel_slip_fr", "wheel_slip_rl", "wheel_slip_rr",
     "tc_active", "abs_active",
-    "surface_grip",
 ]
 
-_TARGET_FIELD: str = "delta_vs_best"
+# ---------------------------------------------------------------------------
+# Target do modelo (2026-04-14, relatório de validação v3)
+#
+# ALTERADO de "delta_vs_best" para "delta_per_sector".
+#
+# Por quê: delta_vs_best é um delta ACUMULADO desde o início da volta
+# (= performanceMeter do AC). Usá-lo como target ensina o modelo "onde na
+# pista o delta costuma ser alto" — não "o que o piloto fez de errado aqui".
+# Isso causava:
+#   1. Scores inflados no final da volta (0.69–1.00 mesmo sem erros)
+#   2. Inversão de tc_active e wheel_slip (correlação negativa vs o esperado)
+#
+# delta_per_sector = delta_vs_best[último snapshot] − delta_vs_best[primeiro snapshot]
+# dentro do mini-setor. Captura apenas a perda de tempo ocorrida NESTE setor.
+# Calculado pelo SectorAggregator (novos dados) ou retroativamente aqui
+# via diffs consecutivos entre mini-setores da mesma volta (dados históricos).
+# ---------------------------------------------------------------------------
+_TARGET_FIELD: str = "delta_per_sector"
 
 # Mínimo de setores para garantir generalização mínima
 _MIN_SECTORS_TO_TRAIN: int = 200   # ≈ 2 voltas completas
 
 # ---------------------------------------------------------------------------
-# Thresholds de validação de dados (2026-04-08)
+# Thresholds de validação de dados
 # ---------------------------------------------------------------------------
 # Clutch da Shared Memory deve ser 0.0–1.0. Valores acima indicam offset errado.
 _CLUTCH_MAX_VALUE: float = 1.0
 
-# delta_vs_best acima deste limiar em segundos indica bug de sessão ou primeira
-# volta sem referência. Monza: volta ≈ 110 s → 60 s é um limite conservador.
-_DELTA_OUTLIER_THRESHOLD_S: float = 60.0
+# Limiar de outlier para o TARGET.
+#
+# Com delta_vs_best (cumulativo): era 60.0 s — primeira volta sem referência
+# podia chegar a centenas de segundos.
+#
+# Com delta_per_sector (por mini-setor): 5.0 s é conservador. Um mini-setor
+# cobre ~1% da pista (≈1.1 s em Monza). Perder 5 s num único mini-setor
+# implica velocidade zero ou crash — claramente um artefato de dados (ex:
+# reset de performanceMeter ao cruzar a linha de chegada com sessão anterior,
+# ou primeira volta sem referência de best lap).
+_DELTA_OUTLIER_THRESHOLD_S: float = 5.0
 
 
 class SectorModel:
@@ -197,47 +226,78 @@ class SectorModel:
                 extra={"track_id": self._track_id},
             )
 
-        # Achatar voltas limpas em uma lista plana de setores
-        sectors: list[dict] = []
-        for lap in clean_laps:
-            sectors.extend(lap.get("mini_sectors", []))
+        # ------------------------------------------------------------------
+        # 2. Extração do target: delta_per_sector
+        #
+        # Estratégia de extração (em ordem de prioridade):
+        #   a) Se o setor já tem "delta_per_sector" (gravado pelo SectorAggregator
+        #      a partir da versão 2026-04-14), usa diretamente.
+        #   b) Se tem "delta_vs_best" mas não "delta_per_sector" (dados históricos
+        #      gravados antes da atualização), computa retroativamente como a
+        #      diferença entre o valor atual e o do setor anterior na mesma volta:
+        #      Δ = delta_vs_best[i] - delta_vs_best[i-1]
+        #      O primeiro setor de cada volta é descartado (sem referência prévia).
+        #   c) Sem target disponível: setor descartado silenciosamente.
+        #
+        # Filtro de outliers: |delta_per_sector| > _DELTA_OUTLIER_THRESHOLD_S
+        # indica reset do performanceMeter entre voltas ou dados corrompidos.
+        # Com o target por-setor (≈1% da pista ≈ 1.1s em Monza), 5 s é
+        # conservador o suficiente para filtrar artefatos sem perder dados reais.
+        # ------------------------------------------------------------------
+        X_rows, y_values = [], []
+        discarded_outliers: int = 0
 
-        if len(sectors) < _MIN_SECTORS_TO_TRAIN:
+        for lap in clean_laps:
+            lap_sectors = lap.get("mini_sectors", [])
+            prev_dvb: Optional[float] = None  # delta_vs_best do setor anterior nesta volta
+
+            for sector in lap_sectors:
+                # --- Determinar o target ---
+                if "delta_per_sector" in sector:
+                    # Formato novo: campo já computado pelo SectorAggregator
+                    target = float(sector["delta_per_sector"])
+                elif "delta_vs_best" in sector:
+                    # Formato histórico: computar retroativamente
+                    curr_dvb = float(sector["delta_vs_best"])
+                    if prev_dvb is None:
+                        # Primeiro setor da volta: sem referência anterior
+                        prev_dvb = curr_dvb
+                        continue
+                    target = curr_dvb - prev_dvb
+                    prev_dvb = curr_dvb
+                else:
+                    # Sem target disponível: descartado
+                    prev_dvb = None
+                    continue
+
+                # --- Filtrar outlier ---
+                if abs(target) > _DELTA_OUTLIER_THRESHOLD_S:
+                    discarded_outliers += 1
+                    prev_dvb = sector.get("delta_vs_best", None)
+                    if prev_dvb is not None:
+                        prev_dvb = float(prev_dvb)
+                    continue
+
+                row = [float(sector.get(f, 0.0)) for f in _FEATURE_FIELDS]
+                X_rows.append(row)
+                y_values.append(target)
+
+        # Verificação antecipada de volume (antes de instanciar numpy/sklearn)
+        total_sectors_seen = sum(len(l.get("mini_sectors", [])) for l in clean_laps)
+        if total_sectors_seen < _MIN_SECTORS_TO_TRAIN:
             logger.warning(
                 "Setores insuficientes para treino após filtragem",
                 extra={
                     "track_id": self._track_id,
-                    "sectors": len(sectors),
+                    "sectors": total_sectors_seen,
                     "min_required": _MIN_SECTORS_TO_TRAIN,
                 },
             )
             return False
 
-        # ------------------------------------------------------------------
-        # 2. Filtro de setores: descartar outliers extremos de delta_vs_best
-        #
-        # |delta_vs_best| > _DELTA_OUTLIER_THRESHOLD_S indica:
-        # - Primeira volta da sessão sem referência no AC (performanceMeter = -inf)
-        # - Bug de cruzamento de linha de chegada com sessão anterior
-        # - Volta inválida que escapou dos filtros do LapRecorder
-        # Esses setores distorcem o target e elevam o RMSE sem valor analítico.
-        # ------------------------------------------------------------------
-        X_rows, y_values = [], []
-        discarded_outliers: int = 0
-        for sector in sectors:
-            if _TARGET_FIELD not in sector:
-                continue
-            delta = float(sector[_TARGET_FIELD])
-            if abs(delta) > _DELTA_OUTLIER_THRESHOLD_S:
-                discarded_outliers += 1
-                continue
-            row = [float(sector.get(f, 0.0)) for f in _FEATURE_FIELDS]
-            X_rows.append(row)
-            y_values.append(delta)
-
         if discarded_outliers > 0:
             logger.info(
-                "Filtragem de outliers: %d setor(es) descartado(s) (|delta| > %.0fs)",
+                "Filtragem de outliers: %d setor(es) descartado(s) (|delta_per_sector| > %.1fs)",
                 discarded_outliers,
                 _DELTA_OUTLIER_THRESHOLD_S,
                 extra={"track_id": self._track_id},
@@ -298,12 +358,13 @@ class SectorModel:
             "SectorModel treinado com sucesso",
             extra={
                 "track_id": self._track_id,
+                "target_field": _TARGET_FIELD,
                 "laps_input": len(lap_data),
                 "laps_clean": len(clean_laps),
                 "laps_discarded_clutch": discarded_clutch,
                 "sectors_discarded_outliers": discarded_outliers,
                 "sectors_trained": self._n_training_sectors,
-                "max_delta_p95": round(self._max_delta, 3),
+                "max_delta_per_sector_p95": round(self._max_delta, 3),
                 "top_features": str(top_features),
             },
         )

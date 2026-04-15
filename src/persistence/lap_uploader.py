@@ -269,6 +269,7 @@ class LapUploader:
                 "lap_id": lap_id,
                 "track_position": s.get("track_position"),
                 "delta_vs_best": s.get("delta_vs_best"),
+                "delta_per_sector": s.get("delta_per_sector"),  # None para dados históricos
                 "throttle": s.get("throttle"),
                 "brake": s.get("brake"),
                 "steering": s.get("steering"),
