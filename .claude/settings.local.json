@@ -13,7 +13,8 @@
       "Bash(py -3.11 -c ' *)",
       "Bash(py -3.11 -m pytest tests/ -x --tb=short -q)",
       "Bash(py -3.11 scripts/train_model.py --track monza --verbose)",
-      "Bash(py -3.11 -m pytest tests/ --tb=short -q)"
+      "Bash(py -3.11 -m pytest tests/ --tb=short -q)",
+      "Bash(py -3.11 scripts/train_model.py --track monza)"
     ]
   }
 }

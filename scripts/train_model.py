@@ -314,8 +314,10 @@ def evaluate_model(model: SectorModel, lap_data: list[dict]) -> dict:
     # severamente o ajuste real do modelo (ex: monza.pkl real R²=0.85,
     # mas clipped R²=0.17 — porque _max_delta=0.25s não consegue cobrir
     # deltas reais até 5s).
+    # `or 0.0` em vez de default do .get(): Supabase retorna chaves COM
+    # valor None para colunas NULL. Pré-migration P1: multi-stats são None.
     X_eval = np.array(
-        [[float(s.get(f, 0.0)) for f in model._scaler.feature_names_in_] for s in all_sectors],
+        [[float(s.get(f) or 0.0) for f in model._scaler.feature_names_in_] for s in all_sectors],
         dtype=float,
     ) if hasattr(model._scaler, "feature_names_in_") else None
 
@@ -323,7 +325,7 @@ def evaluate_model(model: SectorModel, lap_data: list[dict]) -> dict:
         # Fallback: usa _FEATURE_FIELDS via SectorModel
         from src.models.sector_model import _FEATURE_FIELDS
         X_eval = np.array(
-            [[float(s.get(f, 0.0)) for f in _FEATURE_FIELDS] for s in all_sectors],
+            [[float(s.get(f) or 0.0) for f in _FEATURE_FIELDS] for s in all_sectors],
             dtype=float,
         )
     X_scaled = model._scaler.transform(X_eval)
@@ -538,7 +540,7 @@ def main() -> None:
     clean_laps_for_eval = [
         lap for lap in laps
         if not any(
-            float(s.get(_CLUTCH_FIELD, 0.0)) > _CLUTCH_MAX
+            float(s.get(_CLUTCH_FIELD) or 0.0) > _CLUTCH_MAX
             for s in lap.get("mini_sectors", [])
         )
     ]

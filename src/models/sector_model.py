@@ -210,7 +210,7 @@ class SectorModel:
         for lap in lap_data:
             sectors_in_lap = lap.get("mini_sectors", [])
             if any(
-                float(s.get("clutch", 0.0)) > _CLUTCH_MAX_VALUE
+                float(s.get("clutch") or 0.0) > _CLUTCH_MAX_VALUE
                 for s in sectors_in_lap
             ):
                 discarded_clutch += 1
@@ -221,7 +221,7 @@ class SectorModel:
                         "track_id": self._track_id,
                         "lap_number": lap.get("lap_number"),
                         "clutch_max_found": max(
-                            (float(s.get("clutch", 0.0)) for s in sectors_in_lap),
+                            (float(s.get("clutch") or 0.0) for s in sectors_in_lap),
                             default=0.0,
                         ),
                     },
@@ -294,7 +294,12 @@ class SectorModel:
                         prev_dvb = float(prev_dvb)
                     continue
 
-                row = [float(sector.get(f, 0.0)) for f in _FEATURE_FIELDS]
+                # `or 0.0` (não apenas default) porque Supabase retorna chaves
+                # COM valor None para colunas NULL no banco — o default do .get()
+                # só dispara se a chave estiver ausente. Mesma armadilha já
+                # corrigida em delta_per_sector linha ~261. Sem isso, dados
+                # pré-migration P1 (multi-stats NULL) provocam TypeError.
+                row = [float(sector.get(f) or 0.0) for f in _FEATURE_FIELDS]
                 X_rows.append(row)
                 y_values.append(target)
 
@@ -418,7 +423,7 @@ class SectorModel:
         try:
             import numpy as np
             features = np.array(
-                [[float(sector.get(f, 0.0)) for f in _FEATURE_FIELDS]],
+                [[float(sector.get(f) or 0.0) for f in _FEATURE_FIELDS]],
                 dtype=float,
             )
             features_scaled = self._scaler.transform(features)
@@ -448,7 +453,7 @@ class SectorModel:
         try:
             import numpy as np
             X = np.array(
-                [[float(s.get(f, 0.0)) for f in _FEATURE_FIELDS] for s in sectors],
+                [[float(s.get(f) or 0.0) for f in _FEATURE_FIELDS] for s in sectors],
                 dtype=float,
             )
             X_scaled = self._scaler.transform(X)
