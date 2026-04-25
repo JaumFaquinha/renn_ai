@@ -10,9 +10,19 @@ Campos computados (não presentes na Shared Memory, calculados aqui):
                       ocorrida DENTRO deste mini-setor específico — é o
                       target correto para o SectorModel (não o delta
                       acumulado desde o início da volta).
+
+    {input}_max, {input}_min, {input}_std (2026-04-25, Proposal P1):
+        Para os 9 campos de input do piloto e sistemas ativos, o valor
+        médio sozinho destrói a dinâmica intra-setor (~22 snapshots/1.1s
+        @20Hz). Threshold-braking de 1.0 por 0.3s e freio constante de
+        0.27 por 1.1s produzem a MESMA média (~0.27).
+        Capturar peak/valley/variability é prática padrão em telemetria
+        motorsport — ver Segers, J. (2014) Analysis Techniques for
+        Racecar Data Acquisition §4.
 """
 
 import logging
+import statistics
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -28,6 +38,15 @@ _MEAN_FIELDS = [
     "brake_bias", "surface_grip",
     "air_temp", "road_temp",
     "delta_vs_best",  # mantido para compatibilidade retroativa e debug
+]
+
+# Inputs do piloto e sistemas ativos: ALÉM da média (já em _MEAN_FIELDS),
+# também emitem _max, _min, _std para preservar a dinâmica intra-setor.
+# 9 campos × 3 estatísticas = 27 novas colunas no schema §4.5.
+_MULTI_STAT_INPUT_FIELDS = [
+    "throttle", "brake", "steering",
+    "wheel_slip_fl", "wheel_slip_fr", "wheel_slip_rl", "wheel_slip_rr",
+    "tc_active", "abs_active",
 ]
 
 # Campos que usam o valor mínimo (velocidade mínima no setor = indicador de ponto de freio)
@@ -84,6 +103,17 @@ class SectorAggregator:
             values = [s[field] for s in snapshots if field in s]
             if values:
                 result[field] = sum(values) / len(values)
+
+        # Estatísticas multi-stat para inputs do piloto (Proposal P1):
+        # peak/valley/variability são informativas onde a média não é.
+        for field in _MULTI_STAT_INPUT_FIELDS:
+            values = [s[field] for s in snapshots if field in s]
+            if values:
+                result[f"{field}_max"] = max(values)
+                result[f"{field}_min"] = min(values)
+                result[f"{field}_std"] = (
+                    statistics.pstdev(values) if len(values) > 1 else 0.0
+                )
 
         # Velocidade mínima (ponto de freio no setor)
         speed_values = [s["speed_kmh"] for s in snapshots if "speed_kmh" in s]

@@ -273,3 +273,84 @@ class TestLapFixture:
         for sector in lap["mini_sectors"]:
             pos = sector["track_position"]
             assert 0.0 <= pos <= 1.0, f"Posição inválida: {pos}"
+
+
+# ---------------------------------------------------------------------------
+# Testes de teleporte / restart de sessão (Proposta A)
+# ---------------------------------------------------------------------------
+
+class TestLapRecorderTeleport:
+    """
+    Cobre o cenário em que o piloto retorna ao box ('Return to pits'),
+    reinicia a sessão ou troca de carro. A spline salta abruptamente
+    (ex.: 0.7 → 0.0) sem cruzamento limpo da linha de chegada,
+    o que antes deixava o flag _lap_invalid preso indefinidamente.
+    """
+
+    def test_teleport_resets_invalid_flag(self):
+        """Salto negativo grande na spline limpa o flag _lap_invalid."""
+        recorder = LapRecorder(track_id="test")
+        # Simular passagem pelo pit lane que invalida a volta
+        invalid_snap = make_snapshot(0.40)
+        invalid_snap["_is_in_pit_lane"] = 1
+        recorder.process_snapshot(invalid_snap)
+        assert recorder._lap_invalid is True
+
+        # Teleporte: spline salta de 0.40 para 0.01 (return to pits/restart)
+        teleport_snap = make_snapshot(0.01)
+        recorder.process_snapshot(teleport_snap)
+
+        # O flag deve ter sido limpo pela detecção de teleporte
+        assert recorder._lap_invalid is False
+        # Buffer da volta antiga descartado
+        assert recorder._current_lap == []
+        assert recorder._sector_buffer == []
+
+    def test_teleport_clears_lap_buffer(self):
+        """Teleporte descarta os mini-setores acumulados da volta em curso."""
+        recorder = LapRecorder(track_id="test")
+        # Acumular alguns mini-setores válidos
+        for pos in [0.05, 0.15, 0.25, 0.35]:
+            recorder.process_snapshot(make_snapshot(pos))
+        assert len(recorder._current_lap) > 0
+
+        # Teleporte para o início da pista
+        recorder.process_snapshot(make_snapshot(0.02))
+
+        assert recorder._current_lap == []
+        assert recorder._sector_buffer == []
+
+    def test_small_backward_jitter_does_not_trigger_reset(self):
+        """Pequenas oscilações negativas na spline (jitter de leitura) não disparam reset."""
+        recorder = LapRecorder(track_id="test")
+        recorder.process_snapshot(make_snapshot(0.30))
+        # Marca como inválido para detectar se o reset foi disparado
+        recorder._lap_invalid = True
+
+        # Oscilação pequena (< 0.1): não deve resetar
+        recorder.process_snapshot(make_snapshot(0.28))
+        assert recorder._lap_invalid is True  # Flag preservado — não foi reset
+
+    def test_normal_lap_completion_not_treated_as_teleport(self):
+        """Cruzamento normal da linha de chegada (0.99 → 0.01) não dispara reset prematuro."""
+        recorder = LapRecorder(track_id="test")
+        # Simular fim de volta (perto da linha)
+        recorder.process_snapshot(make_snapshot(0.99))
+        # Cruzamento normal — deve ser tratado por _detect_lap_start, não pelo teleporte
+        result = recorder.process_snapshot(make_snapshot(0.01))
+        # Não há volta válida (faltam mini-setores), mas o reset deve ter ocorrido
+        # via fluxo normal de _finalize_lap → _reset_lap. _last_position deve estar atualizado.
+        assert recorder._last_position == pytest.approx(0.01)
+
+    def test_invalid_reason_returns_specific_string(self):
+        """_snapshot_invalid_reason retorna a razão específica para diagnóstico (Proposta D)."""
+        snap = make_snapshot(0.5)
+        snap["_pit_limiter_on"] = 1
+        assert LapRecorder._snapshot_invalid_reason(snap) == "pit_limiter_on"
+
+        snap = make_snapshot(0.5)
+        snap["_is_in_pit_lane"] = 1
+        assert LapRecorder._snapshot_invalid_reason(snap) == "is_in_pit_lane"
+
+        # Snapshot válido retorna None
+        assert LapRecorder._snapshot_invalid_reason(make_snapshot(0.5)) is None

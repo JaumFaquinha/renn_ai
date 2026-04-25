@@ -34,6 +34,14 @@ logger = logging.getLogger(__name__)
 _FINISH_LINE_POSITION: float = 0.0
 # Histerese para não detectar o mesmo cruzamento duas vezes
 _FINISH_LINE_HYSTERESIS: float = 0.05
+# Salto negativo na spline acima deste limiar indica teleporte (return to pits,
+# restart de sessão, troca de carro). O detector de cruzamento de linha de chegada
+# não captura esses casos porque exige histerese estrita (>0.95 → <0.05).
+# Threshold baixo é seguro: a única transição negativa legítima é o cruzamento
+# normal da linha de chegada, filtrado por _detect_lap_start() antes desta checagem.
+# Valor escolhido (0.1 = 10% da pista) tolera jitter de leitura mas captura
+# teleportes a partir de qualquer ponto da pista.
+_SPLINE_TELEPORT_THRESHOLD: float = 0.1
 
 
 class LapRecorder:
@@ -88,6 +96,28 @@ class LapRecorder:
 
         position = snapshot_dict["track_position"]
 
+        # --- Detecção de teleporte / restart de sessão (Proposta A) ---
+        # Saltos negativos grandes na spline indicam "Return to pits", restart
+        # de sessão ou troca de carro. O detector de cruzamento de linha de
+        # chegada (que exige _last_position > 0.95) não captura esses casos,
+        # deixando o flag _lap_invalid preso indefinidamente.
+        if (
+            self._last_position >= 0
+            and (self._last_position - position) > _SPLINE_TELEPORT_THRESHOLD
+            and not self._detect_lap_start(position)
+        ):
+            logger.info(
+                "Reset de spline detectado — descartando volta em curso",
+                extra={
+                    "lap_number": self._lap_number,
+                    "last_position": round(self._last_position, 4),
+                    "current_position": round(position, 4),
+                },
+            )
+            self._reset_lap()
+            self._last_position = position
+            return None
+
         # Detectar início de volta (cruzamento da linha de chegada)
         if self._detect_lap_start(position):
             completed_lap = self._finalize_lap()
@@ -98,7 +128,19 @@ class LapRecorder:
                 return completed_lap
 
         # Validar snapshot antes de adicionar ao buffer
-        if self._is_snapshot_invalid(snapshot_dict):
+        invalid_reason = self._snapshot_invalid_reason(snapshot_dict)
+        if invalid_reason is not None:
+            if not self._lap_invalid:
+                # Loga apenas a primeira invalidação da volta para não inundar
+                # o log a 20Hz quando múltiplos snapshots seguidos são inválidos.
+                logger.info(
+                    "Volta marcada como inválida",
+                    extra={
+                        "lap_number": self._lap_number,
+                        "reason": invalid_reason,
+                        "track_position": round(position, 4),
+                    },
+                )
             self._lap_invalid = True
 
         # Agrupar snapshot no mini-setor correto
@@ -143,32 +185,41 @@ class LapRecorder:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _is_snapshot_invalid(snapshot: dict) -> bool:
-        """Verifica se o snapshot atende aos critérios de descarte (§4.2).
+    def _snapshot_invalid_reason(snapshot: dict) -> Optional[str]:
+        """Retorna a razão de invalidez do snapshot, ou None se válido (§4.2).
 
         Inclui detecção de clutch corrompido: o campo deve ser 0.0–1.0 conforme
         o AC SDK. Valores acima de CLUTCH_MAX_VALUE indicam offset errado na leitura
         da Shared Memory (bug identificado no relatório de validação 2026-04-08).
         """
         if snapshot.get("_is_in_pit") == 1:
-            return True
+            return "is_in_pit"
         if snapshot.get("_is_in_pit_lane") == 1:
-            return True
+            return "is_in_pit_lane"
         if snapshot.get("_pit_limiter_on") == 1:
-            return True
+            return "pit_limiter_on"
         if snapshot.get("_is_ai_controlled") == 1:
-            return True
+            return "is_ai_controlled"
         # Pneus fora da pista — carro em gravel/relva, setor inválido (CLAUDE.md §4.2)
-        if snapshot.get("_number_of_tyres_out", 0) > 0:
-            return True
-        if snapshot.get("_car_damage_max", 0.0) > CAR_DAMAGE_THRESHOLD:
-            return True
-        if snapshot.get("_penalty_time", 0.0) > 0.0:
-            return True
+        tyres_out = snapshot.get("_number_of_tyres_out", 0)
+        if tyres_out > 0:
+            return f"tyres_out={tyres_out}"
+        damage = snapshot.get("_car_damage_max", 0.0)
+        if damage > CAR_DAMAGE_THRESHOLD:
+            return f"car_damage={damage:.3f}>{CAR_DAMAGE_THRESHOLD}"
+        penalty = snapshot.get("_penalty_time", 0.0)
+        if penalty > 0.0:
+            return f"penalty_time={penalty:.2f}"
         # Clutch fora do range 0–1 indica leitura corrompida da Shared Memory
-        if snapshot.get("clutch", 0.0) > CLUTCH_MAX_VALUE:
-            return True
-        return False
+        clutch = snapshot.get("clutch", 0.0)
+        if clutch > CLUTCH_MAX_VALUE:
+            return f"clutch_corrupted={clutch:.2f}>{CLUTCH_MAX_VALUE}"
+        return None
+
+    @staticmethod
+    def _is_snapshot_invalid(snapshot: dict) -> bool:
+        """Wrapper booleano de _snapshot_invalid_reason (mantido por compatibilidade)."""
+        return LapRecorder._snapshot_invalid_reason(snapshot) is not None
 
     # ------------------------------------------------------------------
     # Ciclo de vida da volta

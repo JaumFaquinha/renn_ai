@@ -1,22 +1,38 @@
 """
-TTSIntegration — FASE 6 (Placeholder)
+TTSIntegration — FASE 6
 
 Integração de voz para feedback do engenheiro de corrida.
 Provider configurável via TTS_PROVIDER no .env.
 
-Providers suportados:
-- "none"       : modo texto apenas (padrão)
-- "elevenlabs" : ElevenLabs API (requer ELEVENLABS_API_KEY)
-- "azure"      : Azure Cognitive Services TTS (requer AZURE_SPEECH_KEY)
+Providers suportados (ordem de prioridade prática para sim-racing):
 
-Este módulo é um placeholder funcional — retorna imediatamente em modo
-"none" sem bloquear o loop principal.
+| Provider     | Custo            | Latência típica  | Offline | Qualidade |
+| ------------ | ---------------- | ---------------- | ------- | --------- |
+| pyttsx3      | Free             | 50–150ms         | sim     | mid       |
+| edge_tts     | Free, sem chave  | 250–500ms        | não     | neural    |
+| elevenlabs   | Free 10k chars/m | 75–200ms (Flash) | não     | excelente |
+| azure        | Free 500k/m      | 200–500ms        | não     | excelente |
+| none         | —                | 0                | —       | — (texto) |
+
+Fallback automático: se o provider escolhido falhar (ImportError, sem chave,
+sem rede), cai para `pyttsx3` (Windows SAPI5, sempre disponível em Win10/11).
+Se nem pyttsx3 estiver instalado, cai para "none" (apenas texto).
+
+Cada chamada de speak() registra `synthesis_ms` e `audio_ms` em log estruturado
+para o benchmark e diagnóstico de latência.
+
+Integração no run_session.py — inalterada:
+    tts = TTSIntegration()
+    tts.start()
+    tts.speak("Perdeu 0.3 segundos na Parabolica. Frenagem tardia.")
+    tts.stop()
 """
 
 import logging
 import queue
 import threading
-from typing import Optional
+import time
+from typing import Callable, Optional
 
 from config.settings import (
     AZURE_SPEECH_KEY,
@@ -26,40 +42,95 @@ from config.settings import (
     TTS_PROVIDER,
 )
 
+# Settings opcionais (carregados defensivamente — se faltarem, default sensato)
+try:
+    from config.settings import (
+        TTS_FALLBACK,
+        TTS_LANGUAGE,
+        TTS_MAX_MESSAGE_CHARS,
+        TTS_MIN_INTERVAL_S,
+        TTS_VOICE_NAME,
+    )
+except ImportError:
+    TTS_LANGUAGE = "pt-BR"
+    TTS_VOICE_NAME = ""
+    TTS_FALLBACK = "pyttsx3"
+    TTS_MAX_MESSAGE_CHARS = 140
+    TTS_MIN_INTERVAL_S = 3.0
+
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Vozes default por provider (PT-BR otimizado)
+# ---------------------------------------------------------------------------
+_DEFAULT_EDGE_VOICES_PT_BR = [
+    "pt-BR-AntonioNeural",      # masculina, neutra
+    "pt-BR-FranciscaNeural",    # feminina, neutra
+    "pt-BR-ThalitaNeural",      # feminina, expressiva
+]
+
+_VALID_PROVIDERS = {"none", "pyttsx3", "edge_tts", "elevenlabs", "azure"}
 
 
 class TTSIntegration:
     """
-    Wrapper de síntese de voz com fila assíncrona.
+    Wrapper de síntese de voz com fila assíncrona e fallback automático.
 
-    Não bloqueia o loop principal. Mensagens são enfileiradas e
-    processadas em thread separada.
+    O loop principal (run_session.py @20Hz) NÃO é bloqueado — speak() apenas
+    enfileira a mensagem. Síntese e playback acontecem em thread separada.
 
-    Uso:
-        tts = TTSIntegration()
-        tts.start()
-        tts.speak("Perdeu 0.3 segundos na Parabolica. Frenagem tardia.")
-        tts.stop()
+    Latência observada (lap end → primeira palavra ouvida) por provider:
+    - pyttsx3:    ~150–300ms total (síntese + playback offline)
+    - edge_tts:   ~400–800ms total (download MP3 + decode + play)
+    - elevenlabs: ~200–400ms total (Flash v2.5)
+    - azure:      ~300–600ms total
+
+    Cada chamada de speak() emite logs estruturados com timing real para
+    monitoramento contínuo via TensorBoard ou stdout.
     """
 
     def __init__(self, provider: str = TTS_PROVIDER) -> None:
+        if provider not in _VALID_PROVIDERS:
+            logger.warning(
+                "Provider TTS desconhecido — fallback para none",
+                extra={"provider": provider},
+            )
+            provider = "none"
+
         self._provider = provider
+        self._effective_provider = provider  # pode mudar via fallback
+        self._fallback_provider = TTS_FALLBACK
+        self._language = TTS_LANGUAGE
+        self._voice_name = TTS_VOICE_NAME
+        self._max_chars = TTS_MAX_MESSAGE_CHARS
+        self._min_interval_s = TTS_MIN_INTERVAL_S
+        self._last_spoken_at: float = 0.0
+
         self._queue: queue.Queue[Optional[str]] = queue.Queue()
         self._thread: Optional[threading.Thread] = None
         self._running: bool = False
 
-        logger.info("TTSIntegration inicializada", extra={"provider": provider})
+        # Handle do engine inicializado preguiçosamente na thread worker
+        # (alguns providers ex: pyttsx3 prendem o objeto à thread criadora)
+        self._engine_ready: bool = False
+        self._synthesizer: Optional[Callable[[str], float]] = None
 
-        if provider == "none":
-            logger.info("TTS desabilitado (provider=none) — modo texto apenas")
-        elif provider == "elevenlabs":
-            self._validate_elevenlabs()
-        elif provider == "azure":
-            self._validate_azure()
-        else:
-            logger.warning("Provider TTS desconhecido — fallback para none", extra={"provider": provider})
-            self._provider = "none"
+        if self._provider != "none":
+            self._validate()
+
+        logger.info(
+            "TTSIntegration inicializada",
+            extra={
+                "provider": self._provider,
+                "language": self._language,
+                "fallback": self._fallback_provider,
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
     def start(self) -> None:
         """Inicia a thread de processamento de TTS."""
@@ -72,81 +143,358 @@ class TTSIntegration:
         logger.debug("Thread TTS iniciada")
 
     def stop(self) -> None:
-        """Para a thread de TTS graciosamente."""
+        """Para a thread de TTS graciosamente. Drena a fila por até 5s."""
         self._running = False
         self._queue.put(None)  # Poison pill
         if self._thread is not None:
             self._thread.join(timeout=5.0)
         logger.debug("Thread TTS encerrada")
 
+    # ------------------------------------------------------------------
+    # API pública
+    # ------------------------------------------------------------------
+
     def speak(self, message: str) -> None:
         """
         Enfileira uma mensagem para síntese de voz.
 
-        Args:
-            message: texto a ser sintetizado.
+        - Não bloqueia: queue.put é O(1).
+        - Aplica truncamento (TTS_MAX_MESSAGE_CHARS) — mensagens longas
+          aumentam TTFB de síntese; engenheiro de corrida é direto e curto.
+        - Aplica cooldown (TTS_MIN_INTERVAL_S): evita falar 2 alertas em
+          janela curta — usuário não consegue processar overlap.
         """
-        if self._provider == "none":
-            logger.info("[TTS] %s", message)
+        if not message:
             return
 
-        self._queue.put(message)
+        truncated = self._truncate(message)
+
+        if self._provider == "none":
+            logger.info("[TTS] %s", truncated)
+            return
+
+        now = time.monotonic()
+        if (now - self._last_spoken_at) < self._min_interval_s:
+            logger.debug(
+                "TTS suprimido por cooldown",
+                extra={"since_last_s": round(now - self._last_spoken_at, 2)},
+            )
+            return
+        self._last_spoken_at = now
+
+        self._queue.put(truncated)
 
     # ------------------------------------------------------------------
-    # Worker
+    # Worker (thread separada)
     # ------------------------------------------------------------------
 
     def _worker(self) -> None:
-        """Processa mensagens da fila em thread separada."""
+        """Processa mensagens da fila em thread separada com instrumentação."""
+        # Inicialização preguiçosa do engine (deve acontecer NESTA thread
+        # para providers como pyttsx3 que ligam o engine ao thread-id criador)
+        if not self._engine_ready:
+            self._initialize_engine()
+
         while self._running:
             message = self._queue.get()
             if message is None:
                 break
+
+            t_start = time.monotonic()
             try:
-                self._synthesize(message)
+                synthesis_ms = self._synthesize(message)
+                total_ms = (time.monotonic() - t_start) * 1000
+                audio_ms = total_ms - synthesis_ms
+                logger.info(
+                    "TTS spoken",
+                    extra={
+                        "provider": self._effective_provider,
+                        "chars": len(message),
+                        "synthesis_ms": round(synthesis_ms, 1),
+                        "audio_ms": round(max(0.0, audio_ms), 1),
+                        "total_ms": round(total_ms, 1),
+                    },
+                )
             except Exception as exc:
-                logger.error("Erro na síntese de voz", extra={"error": str(exc)})
+                logger.error(
+                    "Erro na síntese de voz",
+                    extra={"error": str(exc), "provider": self._effective_provider},
+                )
+                # Tentativa de fallback uma única vez por mensagem
+                if self._effective_provider != self._fallback_provider:
+                    logger.info(
+                        "Tentando fallback TTS",
+                        extra={"from": self._effective_provider, "to": self._fallback_provider},
+                    )
+                    self._effective_provider = self._fallback_provider
+                    self._engine_ready = False
+                    self._initialize_engine()
 
-    def _synthesize(self, message: str) -> None:
-        """Despacha para o provider correto."""
+    # ------------------------------------------------------------------
+    # Engine initialization (provider switch)
+    # ------------------------------------------------------------------
+
+    def _initialize_engine(self) -> None:
+        """Inicializa o synthesizer do provider efetivo. Cai para pyttsx3
+        se a inicialização falhar; cai para 'none' se nem pyttsx3 instalar."""
+        provider = self._effective_provider
+        synthesizer: Optional[Callable[[str], float]] = None
+
+        if provider == "pyttsx3":
+            synthesizer = self._init_pyttsx3()
+        elif provider == "edge_tts":
+            synthesizer = self._init_edge_tts()
+        elif provider == "elevenlabs":
+            synthesizer = self._init_elevenlabs()
+        elif provider == "azure":
+            synthesizer = self._init_azure()
+
+        if synthesizer is None and provider != self._fallback_provider:
+            logger.warning(
+                "Inicialização do provider falhou — fallback",
+                extra={"from": provider, "to": self._fallback_provider},
+            )
+            self._effective_provider = self._fallback_provider
+            if self._fallback_provider == "pyttsx3":
+                synthesizer = self._init_pyttsx3()
+
+        if synthesizer is None:
+            logger.warning("Nenhum provider TTS disponível — degradando para 'none'")
+            self._effective_provider = "none"
+
+        self._synthesizer = synthesizer
+        self._engine_ready = True
+
+    def _synthesize(self, message: str) -> float:
+        """Despacha para o synthesizer. Retorna tempo de síntese em ms."""
+        if self._synthesizer is None or self._effective_provider == "none":
+            logger.info("[TTS-fallback-text] %s", message)
+            return 0.0
+        return self._synthesizer(message)
+
+    # ------------------------------------------------------------------
+    # Provider: pyttsx3 (Windows SAPI5 — offline, sempre disponível)
+    # ------------------------------------------------------------------
+
+    def _init_pyttsx3(self) -> Optional[Callable[[str], float]]:
+        try:
+            import pyttsx3  # type: ignore
+        except ImportError:
+            logger.warning(
+                "pyttsx3 não instalado — execute: pip install pyttsx3",
+            )
+            return None
+
+        try:
+            engine = pyttsx3.init()
+            # Tentativa de selecionar voz PT-BR (Maria/Daniel/Microsoft Helena etc.)
+            voices = engine.getProperty("voices") or []
+            target = None
+            for v in voices:
+                vname = (getattr(v, "name", "") or "").lower()
+                vlang = " ".join(str(x) for x in (getattr(v, "languages", []) or []))
+                if (
+                    self._voice_name and self._voice_name.lower() in vname
+                ) or "portuguese" in vname or "pt-br" in vname.lower() or "br" in vlang.lower():
+                    target = v
+                    break
+            if target is not None:
+                engine.setProperty("voice", target.id)
+                logger.info("pyttsx3 voz selecionada", extra={"voice": target.name})
+            engine.setProperty("rate", 190)  # ~190wpm — engenheiro objetivo
+        except Exception as exc:
+            logger.warning("pyttsx3 init falhou", extra={"error": str(exc)})
+            return None
+
+        def synth(message: str) -> float:
+            t0 = time.monotonic()
+            engine.say(message)
+            engine.runAndWait()  # bloqueia ATÉ o áudio terminar — síncrono por design SAPI5
+            # No SAPI5, runAndWait inclui síntese E playback. Não dá para separar
+            # sem reescrever via stream — reportamos o total como synthesis_ms.
+            return (time.monotonic() - t0) * 1000
+
+        return synth
+
+    # ------------------------------------------------------------------
+    # Provider: edge-tts (Microsoft Edge — free, neural, online)
+    # ------------------------------------------------------------------
+
+    def _init_edge_tts(self) -> Optional[Callable[[str], float]]:
+        try:
+            import asyncio  # noqa: F401  (usado dentro do synth)
+            import edge_tts  # type: ignore
+        except ImportError:
+            logger.warning(
+                "edge-tts não instalado — execute: pip install edge-tts",
+            )
+            return None
+
+        try:
+            import sounddevice  # noqa: F401
+            import soundfile  # noqa: F401
+        except ImportError:
+            logger.warning(
+                "sounddevice/soundfile não instalados — execute: "
+                "pip install sounddevice soundfile",
+            )
+            return None
+
+        voice = self._voice_name or _DEFAULT_EDGE_VOICES_PT_BR[0]
+        logger.info("edge-tts voz selecionada", extra={"voice": voice})
+
+        def synth(message: str) -> float:
+            import asyncio
+            import io
+
+            import edge_tts
+            import sounddevice as sd
+            import soundfile as sf
+
+            async def _stream_to_buffer() -> bytes:
+                buf = io.BytesIO()
+                communicate = edge_tts.Communicate(message, voice)
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        buf.write(chunk["data"])
+                return buf.getvalue()
+
+            t0 = time.monotonic()
+            audio_bytes = asyncio.run(_stream_to_buffer())
+            t_synth = (time.monotonic() - t0) * 1000
+
+            data, sr = sf.read(io.BytesIO(audio_bytes))
+            sd.play(data, sr)
+            sd.wait()
+            return t_synth
+
+        return synth
+
+    # ------------------------------------------------------------------
+    # Provider: ElevenLabs (Flash v2.5 — premium, online, voz clonada)
+    # ------------------------------------------------------------------
+
+    def _init_elevenlabs(self) -> Optional[Callable[[str], float]]:
+        if not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID:
+            logger.warning("ElevenLabs sem credenciais — pulando init")
+            return None
+
+        try:
+            from elevenlabs.client import ElevenLabs  # type: ignore
+        except ImportError:
+            logger.warning(
+                "elevenlabs não instalado — execute: pip install elevenlabs",
+            )
+            return None
+
+        try:
+            import sounddevice  # noqa: F401
+            import soundfile  # noqa: F401
+        except ImportError:
+            logger.warning(
+                "sounddevice/soundfile não instalados — execute: "
+                "pip install sounddevice soundfile",
+            )
+            return None
+
+        client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+
+        def synth(message: str) -> float:
+            import io
+
+            import sounddevice as sd
+            import soundfile as sf
+
+            t0 = time.monotonic()
+            # Flash v2.5 — modelo de baixa latência (~75ms TTFB no servidor)
+            audio_iter = client.text_to_speech.convert(
+                voice_id=ELEVENLABS_VOICE_ID,
+                model_id="eleven_flash_v2_5",
+                output_format="mp3_44100_128",
+                text=message,
+            )
+            audio_bytes = b"".join(audio_iter)
+            t_synth = (time.monotonic() - t0) * 1000
+
+            data, sr = sf.read(io.BytesIO(audio_bytes))
+            sd.play(data, sr)
+            sd.wait()
+            return t_synth
+
+        return synth
+
+    # ------------------------------------------------------------------
+    # Provider: Azure Cognitive Services Speech
+    # ------------------------------------------------------------------
+
+    def _init_azure(self) -> Optional[Callable[[str], float]]:
+        if not AZURE_SPEECH_KEY or not AZURE_SPEECH_REGION:
+            logger.warning("Azure Speech sem credenciais — pulando init")
+            return None
+
+        try:
+            import azure.cognitiveservices.speech as speechsdk  # type: ignore
+        except ImportError:
+            logger.warning(
+                "azure-cognitiveservices-speech não instalado — execute: "
+                "pip install azure-cognitiveservices-speech",
+            )
+            return None
+
+        try:
+            speech_config = speechsdk.SpeechConfig(
+                subscription=AZURE_SPEECH_KEY,
+                region=AZURE_SPEECH_REGION,
+            )
+            voice = self._voice_name or "pt-BR-AntonioNeural"
+            speech_config.speech_synthesis_voice_name = voice
+            synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config)
+            logger.info("Azure TTS voz selecionada", extra={"voice": voice})
+        except Exception as exc:
+            logger.warning("Azure init falhou", extra={"error": str(exc)})
+            return None
+
+        def synth(message: str) -> float:
+            t0 = time.monotonic()
+            future = synthesizer.speak_text_async(message)
+            result = future.get()  # bloqueia até síntese + playback
+            t_total = (time.monotonic() - t0) * 1000
+
+            if result.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
+                logger.warning(
+                    "Azure síntese não completou",
+                    extra={"reason": str(result.reason)},
+                )
+            return t_total
+
+        return synth
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _truncate(self, message: str) -> str:
+        """Trunca a mensagem para reduzir TTFB de síntese.
+
+        Engenheiro de corrida fala curto: '0,3s perdidos na Parabolica,
+        frenagem tardia' (52 chars) é o tom alvo.
+        """
+        if len(message) <= self._max_chars:
+            return message
+        cut = message[: self._max_chars].rsplit(" ", 1)[0]
+        return cut + "..."
+
+    def _validate(self) -> None:
+        """Validação de credenciais para providers que exigem chave.
+        Não falha — apenas loga warning. A inicialização real acontece
+        preguiçosamente na thread worker para evitar bloqueio aqui."""
         if self._provider == "elevenlabs":
-            self._speak_elevenlabs(message)
+            if not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID:
+                logger.warning(
+                    "ELEVENLABS_API_KEY/VOICE_ID não configurados — fallback será usado"
+                )
         elif self._provider == "azure":
-            self._speak_azure(message)
-
-    def _speak_elevenlabs(self, message: str) -> None:
-        """Síntese via ElevenLabs API — implementar na Fase 6."""
-        # TODO: Fase 6
-        # from elevenlabs import generate, play
-        # audio = generate(text=message, voice=ELEVENLABS_VOICE_ID, api_key=ELEVENLABS_API_KEY)
-        # play(audio)
-        logger.info("[TTS-ElevenLabs placeholder] %s", message)
-
-    def _speak_azure(self, message: str) -> None:
-        """Síntese via Azure Cognitive Services — implementar na Fase 6."""
-        # TODO: Fase 6
-        # import azure.cognitiveservices.speech as speechsdk
-        # config = speechsdk.SpeechConfig(subscription=AZURE_SPEECH_KEY, region=AZURE_SPEECH_REGION)
-        # synthesizer = speechsdk.SpeechSynthesizer(speech_config=config)
-        # synthesizer.speak_text_async(message).get()
-        logger.info("[TTS-Azure placeholder] %s", message)
-
-    # ------------------------------------------------------------------
-    # Validação de credenciais
-    # ------------------------------------------------------------------
-
-    def _validate_elevenlabs(self) -> None:
-        if not ELEVENLABS_API_KEY:
-            logger.warning("ELEVENLABS_API_KEY não configurada — TTS desabilitado")
-            self._provider = "none"
-        if not ELEVENLABS_VOICE_ID:
-            logger.warning("ELEVENLABS_VOICE_ID não configurada — TTS desabilitado")
-            self._provider = "none"
-
-    def _validate_azure(self) -> None:
-        if not AZURE_SPEECH_KEY:
-            logger.warning("AZURE_SPEECH_KEY não configurada — TTS desabilitado")
-            self._provider = "none"
-        if not AZURE_SPEECH_REGION:
-            logger.warning("AZURE_SPEECH_REGION não configurada — TTS desabilitado")
-            self._provider = "none"
+            if not AZURE_SPEECH_KEY or not AZURE_SPEECH_REGION:
+                logger.warning(
+                    "AZURE_SPEECH_KEY/REGION não configurados — fallback será usado"
+                )

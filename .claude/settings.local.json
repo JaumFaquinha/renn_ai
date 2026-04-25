@@ -9,7 +9,11 @@
       "Bash(py -3 --version)",
       "Bash(py -3.11 -m pytest tests/ -v)",
       "Bash(py -3.11 -m pip install pytest pytest-cov python-dotenv)",
-      "Bash(py -3.11 -m pytest tests/test_memory_reader.py::TestSharedMemoryReaderOffline -v)"
+      "Bash(py -3.11 -m pytest tests/test_memory_reader.py::TestSharedMemoryReaderOffline -v)",
+      "Bash(py -3.11 -c ' *)",
+      "Bash(py -3.11 -m pytest tests/ -x --tb=short -q)",
+      "Bash(py -3.11 scripts/train_model.py --track monza --verbose)",
+      "Bash(py -3.11 -m pytest tests/ --tb=short -q)"
     ]
   }
 }

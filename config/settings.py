@@ -73,7 +73,17 @@ SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")       # service_role key
 SUPABASE_USER_ID: str = os.getenv("SUPABASE_USER_ID", "")  # UUID fixo do piloto
 
 # === TTS — Fase 6 ===
+# Provider: "none" | "pyttsx3" | "edge_tts" | "elevenlabs" | "azure"
+# Recomendação: "edge_tts" (free, neural, online) com fallback "pyttsx3" (offline)
 TTS_PROVIDER: str = os.getenv("TTS_PROVIDER", "none")
+TTS_FALLBACK: str = os.getenv("TTS_FALLBACK", "pyttsx3")
+TTS_LANGUAGE: str = os.getenv("TTS_LANGUAGE", "pt-BR")
+TTS_VOICE_NAME: str = os.getenv("TTS_VOICE_NAME", "")
+# Truncamento de mensagens longas — reduz TTFB de síntese
+TTS_MAX_MESSAGE_CHARS: int = int(os.getenv("TTS_MAX_MESSAGE_CHARS", "140"))
+# Cooldown entre alertas (segundos) — evita overlap auditivo
+TTS_MIN_INTERVAL_S: float = float(os.getenv("TTS_MIN_INTERVAL_S", "3.0"))
+
 ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID: str = os.getenv("ELEVENLABS_VOICE_ID", "")
 AZURE_SPEECH_KEY: str = os.getenv("AZURE_SPEECH_KEY", "")

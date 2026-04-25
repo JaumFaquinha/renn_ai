@@ -13,6 +13,7 @@ Requer:
 """
 
 import argparse
+import concurrent.futures
 import logging
 import signal
 import sys
@@ -101,6 +102,13 @@ def run(track_id: str, rate_hz: int) -> None:
     reporter = ConsoleReporter()
     tts = TTSIntegration()
     report_builder = ReportBuilder(track_id=track_id)
+
+    # Pool dedicado para prefetch async do histórico Supabase (Proposal P3).
+    # Sobrepõe a query de 100–500ms ao trabalho local (analyze/detect/build),
+    # tirando ~200ms do path crítico antes do TTS speak().
+    history_executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="history-prefetch"
+    )
 
     tts.start()
 
@@ -232,6 +240,24 @@ def run(track_id: str, rate_hz: int) -> None:
                             is_alltime_best=historical_pb is None,  # PB se não há histórico
                         )
                     else:
+                        # === Proposal P3: prefetch async do histórico ===
+                        # Dispara a query Supabase IMEDIATAMENTE com todas as
+                        # ~100 posições da volta. Quando build() terminar, o
+                        # resultado já estará pronto (ou quase). Cobre a query
+                        # de 100–500ms com o trabalho local (~30ms) — diferença
+                        # vai para o budget de TTS.
+                        all_positions = [
+                            s["track_position"]
+                            for s in completed_lap["mini_sectors"]
+                            if s.get("track_position") is not None
+                        ]
+                        history_future = history_executor.submit(
+                            query_service.get_sectors_history_batch,
+                            track_id=track_id,
+                            car_model=car_model,
+                            positions=all_positions,
+                        )
+
                         # Analisar vs melhor volta de referência
                         analyzed = analyzer.analyze(completed_lap["mini_sectors"])
 
@@ -255,16 +281,30 @@ def run(track_id: str, rate_hz: int) -> None:
                             model_scores=model_scores,
                         )
 
-                        # Busca histórico de delta por setor (Fase 7D)
-                        # Chamada síncrona mas fora do loop 20Hz — aceitável
-                        sector_history = {}
+                        # Aguarda prefetch (idealmente já concluído) e filtra
+                        # para as posições do top_sectors. Timeout 2s para não
+                        # travar a sessão se Supabase estiver lento.
+                        sector_history: dict = {}
                         if lap_report.top_sectors:
-                            positions = [s.track_position for s in lap_report.top_sectors]
-                            sector_history = query_service.get_sectors_history_batch(
-                                track_id=track_id,
-                                car_model=car_model,
-                                positions=positions,
-                            )
+                            try:
+                                full_history = history_future.result(timeout=2.0)
+                                top_positions = {
+                                    s.track_position for s in lap_report.top_sectors
+                                }
+                                sector_history = {
+                                    pos: full_history[pos]
+                                    for pos in top_positions
+                                    if pos in full_history
+                                }
+                            except concurrent.futures.TimeoutError:
+                                logger.warning(
+                                    "Prefetch de histórico não retornou em 2s — exibindo sem tendências"
+                                )
+                            except Exception as exc:
+                                logger.debug(
+                                    "Prefetch de histórico falhou",
+                                    extra={"error": str(exc)},
+                                )
 
                         reporter.report(lap_report, sector_history=sector_history)
 
@@ -307,6 +347,7 @@ def run(track_id: str, rate_hz: int) -> None:
 
             uploader.stop(timeout_s=10.0)
             tts.stop()
+            history_executor.shutdown(wait=False)
             logger.info("Sessão encerrada", extra={"voltas_completadas": lap_count})
 
 

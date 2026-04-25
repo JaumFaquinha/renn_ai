@@ -37,13 +37,24 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _FEATURE_FIELDS: list[str] = [
     "track_position",
-    "throttle", "brake", "steering", "clutch",
+    # === Inputs do piloto: média + max + min + std (Proposal P1, 2026-04-25) ===
+    # Adição da tripla (max, min, std) recupera a dinâmica intra-setor que a
+    # média sozinha aniquilava. Esperado: importance dos inputs sobe de <1%
+    # para ~10–25% após retreino com novos dados gravados.
+    "throttle", "throttle_max", "throttle_min", "throttle_std",
+    "brake", "brake_max", "brake_min", "brake_std",
+    "steering", "steering_max", "steering_min", "steering_std",
+    "clutch",
     "gear", "rpms",
     "speed_kmh", "speed_min",
     "gforce_x", "gforce_y", "gforce_z",
     "local_ang_vel_x", "local_ang_vel_y", "local_ang_vel_z",
-    "wheel_slip_fl", "wheel_slip_fr", "wheel_slip_rl", "wheel_slip_rr",
-    "tc_active", "abs_active",
+    "wheel_slip_fl", "wheel_slip_fl_max", "wheel_slip_fl_min", "wheel_slip_fl_std",
+    "wheel_slip_fr", "wheel_slip_fr_max", "wheel_slip_fr_min", "wheel_slip_fr_std",
+    "wheel_slip_rl", "wheel_slip_rl_max", "wheel_slip_rl_min", "wheel_slip_rl_std",
+    "wheel_slip_rr", "wheel_slip_rr_max", "wheel_slip_rr_min", "wheel_slip_rr_std",
+    "tc_active", "tc_active_max", "tc_active_min", "tc_active_std",
+    "abs_active", "abs_active_max", "abs_active_min", "abs_active_std",
 ]
 
 # ---------------------------------------------------------------------------
@@ -253,10 +264,15 @@ class SectorModel:
 
             for sector in lap_sectors:
                 # --- Determinar o target ---
-                if "delta_per_sector" in sector:
+                # Importante: usar `is not None` em vez de `in sector`. Dados vindos
+                # do Supabase sempre carregam todas as colunas selecionadas, mesmo
+                # quando o valor é NULL no banco — o que ocorre em mini-setores
+                # gravados antes da migração que introduziu `delta_per_sector`
+                # (commit a425202). Sem essa proteção, `float(None)` levanta TypeError.
+                if sector.get("delta_per_sector") is not None:
                     # Formato novo: campo já computado pelo SectorAggregator
                     target = float(sector["delta_per_sector"])
-                elif "delta_vs_best" in sector:
+                elif sector.get("delta_vs_best") is not None:
                     # Formato histórico: computar retroativamente
                     curr_dvb = float(sector["delta_vs_best"])
                     if prev_dvb is None:
@@ -325,6 +341,13 @@ class SectorModel:
 
         # GradientBoosting: captura relações não-lineares entre posição,
         # inputs e delta. Subsample=0.8 reduz overfitting com poucas voltas.
+        #
+        # loss='huber' (Proposal P2, 2026-04-25): mais robusto a outliers
+        # residuais que passam pelo filtro de 5s. Squared loss penaliza
+        # quadraticamente erros grandes — em telemetria de sim-racing,
+        # picos isolados (saída de pista, contato) deslocam a otimização.
+        # Huber é linear acima de delta=alpha, quadrática abaixo. alpha=0.9
+        # significa: usa quantile 0.9 dos resíduos como ponto de transição.
         model = GradientBoostingRegressor(
             n_estimators=100,
             max_depth=4,
@@ -332,6 +355,8 @@ class SectorModel:
             subsample=0.8,
             min_samples_leaf=5,
             random_state=42,
+            loss="huber",
+            alpha=0.9,
         )
         model.fit(X_scaled, y)
 
