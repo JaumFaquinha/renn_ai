@@ -198,8 +198,6 @@ class LapRecorder:
             return "is_in_pit_lane"
         if snapshot.get("_pit_limiter_on") == 1:
             return "pit_limiter_on"
-        if snapshot.get("_is_ai_controlled") == 1:
-            return "is_ai_controlled"
         # Pneus fora da pista — carro em gravel/relva, setor inválido (CLAUDE.md §4.2)
         tyres_out = snapshot.get("_number_of_tyres_out", 0)
         if tyres_out > 0:

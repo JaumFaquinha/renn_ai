@@ -29,6 +29,9 @@ ruff==0.6.9
 # Persistência — Fase 7 (Supabase)
 supabase==2.10.0
 
+# Tracking de experimentos ML (opcional — usado com --mlflow em train_model.py)
+mlflow>=2.0.0
+
 # Utilitários
 python-dotenv==1.0.1
 

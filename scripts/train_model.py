@@ -62,6 +62,17 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Exibe feature importance detalhada após treino",
     )
+    parser.add_argument(
+        "--mlflow",
+        action="store_true",
+        help="Habilita tracking de experimentos via MLflow (requer: pip install mlflow)",
+    )
+    parser.add_argument(
+        "--mlflow-experiment",
+        default=None,
+        dest="mlflow_experiment",
+        help="Nome do experimento MLflow (default: sector_model_{track_id})",
+    )
     return parser.parse_args()
 
 
@@ -472,6 +483,95 @@ def cross_validate_model(
 
 
 # ---------------------------------------------------------------------------
+# MLflow tracking
+# ---------------------------------------------------------------------------
+
+def _log_to_mlflow(
+    mlflow,
+    track_id: str,
+    car_model: str | None,
+    n_laps: int,
+    n_clean_laps: int,
+    model: "SectorModel",
+    metrics: dict,
+    cv_metrics: dict,
+    model_path: str,
+) -> None:
+    """
+    Registra um run no MLflow com params, métricas, feature importance e artefato.
+
+    Chamado apenas quando --mlflow está ativo e o modelo foi salvo com sucesso.
+    Falhas de tracking não interrompem o script (o modelo já foi salvo localmente).
+    """
+    try:
+        run_name = f"{track_id}__{car_model or 'any'}"
+        with mlflow.start_run(run_name=run_name):
+            # --- Parâmetros fixos do modelo ---
+            mlflow.log_params({
+                "track_id": track_id,
+                "car_model": car_model or "any",
+                "target_field": "delta_per_sector",
+                "n_laps_total": n_laps,
+                "n_laps_clean": n_clean_laps,
+                # Hiperparâmetros do GBR (espelham os valores hardcoded em sector_model.py)
+                "gbr_n_estimators": 100,
+                "gbr_max_depth": 4,
+                "gbr_learning_rate": 0.1,
+                "gbr_subsample": 0.8,
+                "gbr_min_samples_leaf": 5,
+                "gbr_loss": "huber",
+                "gbr_alpha": 0.9,
+            })
+
+            # --- Tags descritivas ---
+            mlflow.set_tags({
+                "n_training_sectors": model.n_training_sectors,
+                "n_discarded_clutch_laps": model.n_discarded_clutch_laps,
+                "n_discarded_outlier_sectors": model.n_discarded_outlier_sectors,
+            })
+
+            # --- Métricas in-sample ---
+            if metrics:
+                in_sample = {
+                    f"insample_{k}": v
+                    for k, v in metrics.items()
+                    if isinstance(v, (int, float)) and k != "n_sectors"
+                }
+                mlflow.log_metrics(in_sample)
+                mlflow.log_metric("insample_n_sectors", metrics.get("n_sectors", 0))
+
+            # --- Métricas de cross-validation ---
+            if cv_metrics:
+                cv_loggable = {
+                    f"cv_{k}": v
+                    for k, v in cv_metrics.items()
+                    if isinstance(v, (int, float))
+                }
+                mlflow.log_metrics(cv_loggable)
+
+            # --- Feature importance (top 20 como métricas individuais) ---
+            for i, (feat, imp) in enumerate(model.feature_importance.items()):
+                mlflow.log_metric(f"feat__{feat}", imp)
+                if i >= 19:
+                    break
+
+            # --- Artefato: o .pkl do modelo ---
+            mlflow.log_artifact(model_path, artifact_path="model")
+
+        logger.info(
+            "Run registrado no MLflow",
+            extra={"run_name": run_name, "model_path": model_path},
+        )
+        print(f"  MLflow run registrado: '{run_name}' — execute 'mlflow ui' para visualizar.")
+
+    except Exception as exc:
+        logger.warning(
+            "Falha ao registrar run no MLflow — modelo salvo localmente normalmente",
+            extra={"error": str(exc)},
+        )
+
+
+# ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
 
@@ -487,6 +587,22 @@ def main() -> None:
     track_id: str = args.track
     car_model: str | None = args.car
     min_laps: int = args.min_laps
+
+    # MLflow: configurar experimento se flag ativada
+    _mlflow = None
+    if args.mlflow:
+        try:
+            import mlflow
+            _mlflow = mlflow
+            experiment_name = args.mlflow_experiment or f"sector_model_{track_id}"
+            _mlflow.set_experiment(experiment_name)
+            logger.info("MLflow habilitado", extra={"experiment": experiment_name})
+        except ImportError:
+            logger.warning(
+                "mlflow não instalado — tracking desabilitado. "
+                "Execute: pip install mlflow"
+            )
+            _mlflow = None
 
     logger.info(
         "Iniciando treino",
@@ -636,6 +752,20 @@ def main() -> None:
         sys.exit(1)
 
     print("─" * 60 + "\n")
+
+    # 5. MLflow tracking (opt-in via --mlflow)
+    if _mlflow is not None and saved:
+        _log_to_mlflow(
+            mlflow=_mlflow,
+            track_id=track_id,
+            car_model=car_model,
+            n_laps=len(laps),
+            n_clean_laps=len(clean_laps_for_eval),
+            model=model,
+            metrics=metrics,
+            cv_metrics=cv_metrics,
+            model_path=str(model_path),
+        )
 
 
 if __name__ == "__main__":

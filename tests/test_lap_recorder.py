@@ -207,10 +207,11 @@ class TestLapRecorderValidation:
         snap["_number_of_tyres_out"] = 2
         assert LapRecorder._is_snapshot_invalid(snap) is True
 
-    def test_rejects_snapshot_ai_controlled(self):
+    def test_accepts_snapshot_ai_controlled(self):
+        # AI-controlled laps são aceitas para permitir registro de tempos da IA.
         snap = make_snapshot(0.5)
         snap["_is_ai_controlled"] = 1
-        assert LapRecorder._is_snapshot_invalid(snap) is True
+        assert LapRecorder._is_snapshot_invalid(snap) is False
 
     def test_rejects_snapshot_with_high_damage(self):
         snap = make_snapshot(0.5)
