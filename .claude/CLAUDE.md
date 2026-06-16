@@ -253,14 +253,19 @@ Disponíveis para expansão sem necessidade de regravar sessões antigas.
 > **Nota:** `speed_min` é um **campo computado** (mínimo de `speedKmh` dentro do mini-setor), não um campo da Shared Memory. Não deve ser confundido com um campo lido via mmap.
 >
 > **Nota:** `tyre_compound` é um **metadado de volta** gravado em `laps.tyre_compound`, não nos mini-setores. Um composto não muda dentro de uma mesma volta.
+>
+> **Nota (2026-04-25, Proposal P1):** Inputs do piloto e sistemas ativos têm 4 estatísticas: `mean` (campo base), `_max` (peak), `_min` (valley), `_std` (variabilidade). A média sozinha aniquila a dinâmica intra-setor (~22 snapshots em ~1.1s @20Hz). Campos com tripla extra: `throttle`, `brake`, `steering`, `wheel_slip_fl/fr/rl/rr`, `tc_active`, `abs_active` (9 inputs × 3 stats = 27 colunas adicionais). Validação empírica em `model_validation_playbook.md` Observação C.
 
 ```json
 {
   "track_position": 0.23,
   "delta_vs_best": 0.18,
-  "throttle": 0.71,
-  "brake": 0.88,
-  "steering": 0.34,
+  "delta_per_sector": 0.045,
+
+  "throttle": 0.71, "throttle_max": 1.0,  "throttle_min": 0.42, "throttle_std": 0.18,
+  "brake": 0.18,    "brake_max": 0.92,    "brake_min": 0.0,     "brake_std": 0.31,
+  "steering": 0.34, "steering_max": 0.51, "steering_min": 0.20, "steering_std": 0.09,
+
   "gear": 3,
   "rpms": 8400,
   "clutch": 0.0,
@@ -272,12 +277,15 @@ Disponíveis para expansão sem necessidade de regravar sessões antigas.
   "local_ang_vel_x": 0.12,
   "local_ang_vel_y": 0.04,
   "local_ang_vel_z": 0.09,
-  "wheel_slip_fl": 0.08,
-  "wheel_slip_fr": 0.09,
-  "wheel_slip_rl": 0.12,
-  "wheel_slip_rr": 0.11,
-  "tc_active": 0.0,
-  "abs_active": 0.0,
+
+  "wheel_slip_fl": 0.08, "wheel_slip_fl_max": 0.18, "wheel_slip_fl_min": 0.02, "wheel_slip_fl_std": 0.04,
+  "wheel_slip_fr": 0.09, "wheel_slip_fr_max": 0.20, "wheel_slip_fr_min": 0.03, "wheel_slip_fr_std": 0.05,
+  "wheel_slip_rl": 0.12, "wheel_slip_rl_max": 0.25, "wheel_slip_rl_min": 0.04, "wheel_slip_rl_std": 0.06,
+  "wheel_slip_rr": 0.11, "wheel_slip_rr_max": 0.24, "wheel_slip_rr_min": 0.04, "wheel_slip_rr_std": 0.06,
+
+  "tc_active": 0.05,  "tc_active_max": 1.0,  "tc_active_min": 0.0, "tc_active_std": 0.22,
+  "abs_active": 0.10, "abs_active_max": 1.0, "abs_active_min": 0.0, "abs_active_std": 0.30,
+
   "drs_active": 0,
   "drs_available": 0,
   "brake_bias": 0.58,

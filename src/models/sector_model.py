@@ -34,16 +34,32 @@ logger = logging.getLogger(__name__)
 #   surface_grip — constante em todas as sessões analisadas (mean=1.0, std≈0).
 #                  Feature importance = 0.0 em todos os modelos treinados.
 #                  Ocupa posição no scaler sem qualquer ganho analítico.
+#
+# REMOVIDO (2026-06-15, validação MLflow v7):
+#   clutch — em datasets cross-car, atuava como proxy de sessão/carro
+#            (aidAutoClutch varia entre carros). Importância 4.5% com
+#            sensibilidade dominante (+20ms) era leakage, não sinal de
+#            pilotagem. Validação v7 (CV R² caiu para 0.20) confirmou.
 # ---------------------------------------------------------------------------
 _FEATURE_FIELDS: list[str] = [
     "track_position",
-    "throttle", "brake", "steering", "clutch",
+    # === Inputs do piloto: média + max + min + std (Proposal P1, 2026-04-25) ===
+    # Adição da tripla (max, min, std) recupera a dinâmica intra-setor que a
+    # média sozinha aniquilava. Esperado: importance dos inputs sobe de <1%
+    # para ~10–25% após retreino com novos dados gravados.
+    "throttle", "throttle_max", "throttle_min", "throttle_std",
+    "brake", "brake_max", "brake_min", "brake_std",
+    "steering", "steering_max", "steering_min", "steering_std",
     "gear", "rpms",
     "speed_kmh", "speed_min",
     "gforce_x", "gforce_y", "gforce_z",
     "local_ang_vel_x", "local_ang_vel_y", "local_ang_vel_z",
-    "wheel_slip_fl", "wheel_slip_fr", "wheel_slip_rl", "wheel_slip_rr",
-    "tc_active", "abs_active",
+    "wheel_slip_fl", "wheel_slip_fl_max", "wheel_slip_fl_min", "wheel_slip_fl_std",
+    "wheel_slip_fr", "wheel_slip_fr_max", "wheel_slip_fr_min", "wheel_slip_fr_std",
+    "wheel_slip_rl", "wheel_slip_rl_max", "wheel_slip_rl_min", "wheel_slip_rl_std",
+    "wheel_slip_rr", "wheel_slip_rr_max", "wheel_slip_rr_min", "wheel_slip_rr_std",
+    "tc_active", "tc_active_max", "tc_active_min", "tc_active_std",
+    "abs_active", "abs_active_max", "abs_active_min", "abs_active_std",
 ]
 
 # ---------------------------------------------------------------------------
@@ -121,6 +137,12 @@ class SectorModel:
         self._n_training_sectors: int = 0
         self._n_discarded_clutch_laps: int = 0
         self._n_discarded_outlier_sectors: int = 0
+        # One-hot de car_model (2026-06-15): em dataset cross-car, sem essa
+        # feature o GBR usa rpms/clutch/speed_min como proxy do carro, o que
+        # destrói o sinal de pilotagem. Lista ordenada dos carros vistos no
+        # treino; predict() faz lookup; carro desconhecido → vetor zerado
+        # (modelo cai de volta para a média entre carros).
+        self._car_models: list[str] = []
 
     # ------------------------------------------------------------------
     # Propriedades
@@ -154,6 +176,33 @@ class SectorModel:
     def n_discarded_outlier_sectors(self) -> int:
         """Número de setores descartados por |delta_vs_best| excessivo no último treino."""
         return self._n_discarded_outlier_sectors
+
+    @property
+    def car_models(self) -> list[str]:
+        """Lista ordenada de car_models conhecidos pelo modelo (one-hot columns)."""
+        return list(self._car_models)
+
+    # ------------------------------------------------------------------
+    # Helpers de feature building
+    # ------------------------------------------------------------------
+
+    def _row_for_sector(self, sector: dict, car_model: str | None) -> list[float]:
+        """
+        Monta a linha de features para um mini-setor:
+        [_FEATURE_FIELDS values...] + [one-hot car_model...]
+
+        Carro desconhecido → todas as colunas one-hot ficam 0.0 (fallback
+        para média entre carros, sem quebrar a predição).
+        """
+        row = [float(sector.get(f) or 0.0) for f in _FEATURE_FIELDS]
+        for cm in self._car_models:
+            row.append(1.0 if cm == car_model else 0.0)
+        return row
+
+    @property
+    def _all_feature_names(self) -> list[str]:
+        """Nome completo das colunas (base + one-hot) — usado em feature_importance."""
+        return list(_FEATURE_FIELDS) + [f"car__{cm}" for cm in self._car_models]
 
     # ------------------------------------------------------------------
     # Treino
@@ -199,7 +248,7 @@ class SectorModel:
         for lap in lap_data:
             sectors_in_lap = lap.get("mini_sectors", [])
             if any(
-                float(s.get("clutch", 0.0)) > _CLUTCH_MAX_VALUE
+                float(s.get("clutch") or 0.0) > _CLUTCH_MAX_VALUE
                 for s in sectors_in_lap
             ):
                 discarded_clutch += 1
@@ -210,7 +259,7 @@ class SectorModel:
                         "track_id": self._track_id,
                         "lap_number": lap.get("lap_number"),
                         "clutch_max_found": max(
-                            (float(s.get("clutch", 0.0)) for s in sectors_in_lap),
+                            (float(s.get("clutch") or 0.0) for s in sectors_in_lap),
                             default=0.0,
                         ),
                     },
@@ -244,19 +293,37 @@ class SectorModel:
         # Com o target por-setor (≈1% da pista ≈ 1.1s em Monza), 5 s é
         # conservador o suficiente para filtrar artefatos sem perder dados reais.
         # ------------------------------------------------------------------
+        # Descobrir car_models presentes — define as colunas one-hot.
+        # Ordem alfabética determinística (necessária para o scaler ser
+        # reprodutível). Filtra None/"unknown" sem descartar a volta — vira
+        # vetor zerado e o GBR usa as features de base.
+        unique_cars = {
+            (lap.get("car_model") or "").strip()
+            for lap in clean_laps
+        }
+        unique_cars.discard("")
+        unique_cars.discard("unknown")
+        self._car_models = sorted(unique_cars)
+
         X_rows, y_values = [], []
         discarded_outliers: int = 0
 
         for lap in clean_laps:
             lap_sectors = lap.get("mini_sectors", [])
+            lap_car = (lap.get("car_model") or "").strip() or None
             prev_dvb: Optional[float] = None  # delta_vs_best do setor anterior nesta volta
 
             for sector in lap_sectors:
                 # --- Determinar o target ---
-                if "delta_per_sector" in sector:
+                # Importante: usar `is not None` em vez de `in sector`. Dados vindos
+                # do Supabase sempre carregam todas as colunas selecionadas, mesmo
+                # quando o valor é NULL no banco — o que ocorre em mini-setores
+                # gravados antes da migração que introduziu `delta_per_sector`
+                # (commit a425202). Sem essa proteção, `float(None)` levanta TypeError.
+                if sector.get("delta_per_sector") is not None:
                     # Formato novo: campo já computado pelo SectorAggregator
                     target = float(sector["delta_per_sector"])
-                elif "delta_vs_best" in sector:
+                elif sector.get("delta_vs_best") is not None:
                     # Formato histórico: computar retroativamente
                     curr_dvb = float(sector["delta_vs_best"])
                     if prev_dvb is None:
@@ -278,7 +345,12 @@ class SectorModel:
                         prev_dvb = float(prev_dvb)
                     continue
 
-                row = [float(sector.get(f, 0.0)) for f in _FEATURE_FIELDS]
+                # `or 0.0` (não apenas default) porque Supabase retorna chaves
+                # COM valor None para colunas NULL no banco — o default do .get()
+                # só dispara se a chave estiver ausente. Mesma armadilha já
+                # corrigida em delta_per_sector linha ~261. Sem isso, dados
+                # pré-migration P1 (multi-stats NULL) provocam TypeError.
+                row = self._row_for_sector(sector, lap_car)
                 X_rows.append(row)
                 y_values.append(target)
 
@@ -325,6 +397,13 @@ class SectorModel:
 
         # GradientBoosting: captura relações não-lineares entre posição,
         # inputs e delta. Subsample=0.8 reduz overfitting com poucas voltas.
+        #
+        # loss='huber' (Proposal P2, 2026-04-25): mais robusto a outliers
+        # residuais que passam pelo filtro de 5s. Squared loss penaliza
+        # quadraticamente erros grandes — em telemetria de sim-racing,
+        # picos isolados (saída de pista, contato) deslocam a otimização.
+        # Huber é linear acima de delta=alpha, quadrática abaixo. alpha=0.9
+        # significa: usa quantile 0.9 dos resíduos como ponto de transição.
         model = GradientBoostingRegressor(
             n_estimators=100,
             max_depth=4,
@@ -332,6 +411,8 @@ class SectorModel:
             subsample=0.8,
             min_samples_leaf=5,
             random_state=42,
+            loss="huber",
+            alpha=0.9,
         )
         model.fit(X_scaled, y)
 
@@ -346,8 +427,8 @@ class SectorModel:
         positive_deltas = y[y > 0]
         self._max_delta = float(np.percentile(positive_deltas, 95)) if len(positive_deltas) > 0 else 1.0
 
-        # Feature importance ordenada
-        raw_importance = dict(zip(_FEATURE_FIELDS, model.feature_importances_))
+        # Feature importance ordenada (base + colunas one-hot do car_model)
+        raw_importance = dict(zip(self._all_feature_names, model.feature_importances_))
         self._feature_importance = {
             k: round(float(v), 4)
             for k, v in sorted(raw_importance.items(), key=lambda x: -x[1])
@@ -374,12 +455,15 @@ class SectorModel:
     # Predição
     # ------------------------------------------------------------------
 
-    def predict(self, sector: dict) -> float:
+    def predict(self, sector: dict, car_model: str | None = None) -> float:
         """
         Prediz o score de anomalia de performance do setor.
 
         Args:
             sector: mini-setor no formato schema §4.5
+            car_model: identificador do carro (opcional). Necessário para
+                       modelos treinados cross-car — sem ele, a one-hot fica
+                       zerada e a predição cai para a média entre carros.
 
         Returns:
             Score de anomalia 0.0–1.0:
@@ -392,10 +476,7 @@ class SectorModel:
 
         try:
             import numpy as np
-            features = np.array(
-                [[float(sector.get(f, 0.0)) for f in _FEATURE_FIELDS]],
-                dtype=float,
-            )
+            features = np.array([self._row_for_sector(sector, car_model)], dtype=float)
             features_scaled = self._scaler.transform(features)
             predicted_delta = float(self._model.predict(features_scaled)[0])
             score = max(0.0, min(1.0, predicted_delta / self._max_delta))
@@ -404,7 +485,11 @@ class SectorModel:
             logger.debug("Falha na predição do SectorModel", extra={"error": str(exc)})
             return 0.0
 
-    def predict_batch(self, sectors: list[dict]) -> list[float]:
+    def predict_batch(
+        self,
+        sectors: list[dict],
+        car_model: str | None = None,
+    ) -> list[float]:
         """
         Prediz scores de anomalia para uma lista de mini-setores em lote.
 
@@ -413,6 +498,8 @@ class SectorModel:
 
         Args:
             sectors: lista de mini-setores no formato schema §4.5
+            car_model: identificador do carro (opcional). Necessário para
+                       modelos treinados cross-car (one-hot do car).
 
         Returns:
             Lista de scores 0.0–1.0 na mesma ordem dos setores de entrada.
@@ -423,7 +510,7 @@ class SectorModel:
         try:
             import numpy as np
             X = np.array(
-                [[float(s.get(f, 0.0)) for f in _FEATURE_FIELDS] for s in sectors],
+                [self._row_for_sector(s, car_model) for s in sectors],
                 dtype=float,
             )
             X_scaled = self._scaler.transform(X)
@@ -473,6 +560,7 @@ class SectorModel:
                 "max_delta": self._max_delta,
                 "feature_importance": self._feature_importance,
                 "feature_fields": _FEATURE_FIELDS,
+                "car_models": self._car_models,
                 "n_training_sectors": self._n_training_sectors,
             }
             Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -550,6 +638,9 @@ class SectorModel:
             self._max_delta = payload.get("max_delta", 1.0)
             self._feature_importance = payload.get("feature_importance", {})
             self._n_training_sectors = payload.get("n_training_sectors", 0)
+            # car_models: ausente em pkl legado (pré-2026-06-15) → lista vazia,
+            # one-hot vira no-op, modelo se comporta como antes.
+            self._car_models = list(payload.get("car_models", []))
             self._is_trained = True
 
             logger.info(

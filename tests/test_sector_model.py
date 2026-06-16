@@ -247,6 +247,54 @@ class TestTrainInsufficient:
         assert result is True
         assert model.is_trained is True
 
+    def test_train_handles_delta_per_sector_none_from_supabase(self) -> None:
+        """
+        Dados vindos do Supabase carregam todas as colunas selecionadas, mesmo
+        quando o valor é NULL no banco (caso de mini-setores gravados antes da
+        migração que introduziu `delta_per_sector`).
+
+        O treino deve cair no fallback retroativo via `delta_vs_best` em vez de
+        levantar `TypeError: float() argument must be ... not 'NoneType'`.
+        """
+        sectors_mixed = []
+        dvb = 0.0
+        for i in range(110):
+            s = _make_sector(track_position=i / 110)
+            # Simula coluna NULL no banco: chave existe, valor é None
+            s["delta_per_sector"] = None
+            dvb += 0.02
+            s["delta_vs_best"] = dvb
+            sectors_mixed.append(s)
+
+        laps = [
+            {"lap_number": i, "lap_time_ms": 82000, "mini_sectors": sectors_mixed}
+            for i in range(4)
+        ]
+        model = SectorModel(track_id=_TRACK_ID)
+        # Antes da correção, isto levantava TypeError no float(None)
+        result = model.train(laps)
+        assert result is True
+        assert model.is_trained is True
+
+    def test_train_skips_sector_when_both_targets_are_none(self) -> None:
+        """
+        Setor com `delta_per_sector=None` E `delta_vs_best=None` deve ser
+        descartado silenciosamente (sem TypeError), igual a quando ambas as
+        chaves estão ausentes.
+        """
+        sectors_all_null = []
+        for i in range(300):
+            s = _make_sector(track_position=i / 300)
+            s["delta_per_sector"] = None
+            s["delta_vs_best"] = None
+            sectors_all_null.append(s)
+
+        laps = [{"lap_number": 1, "lap_time_ms": 82000, "mini_sectors": sectors_all_null}]
+        model = SectorModel(track_id=_TRACK_ID)
+        result = model.train(laps)
+        # Todos descartados → insuficientes (sem exceção)
+        assert result is False
+
 
 # ---------------------------------------------------------------------------
 # 3 — Treinamento bem-sucedido

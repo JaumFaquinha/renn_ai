@@ -244,3 +244,48 @@ ALTER TABLE laps ADD COLUMN IF NOT EXISTS tyre_compound TEXT;
 -- Dados históricos sem essa coluna continuam utilizáveis via retrocomputação em train_model.py.
 -- Idempotente: ADD COLUMN IF NOT EXISTS é no-op se a coluna já existir.
 ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS delta_per_sector FLOAT;
+
+-- Migration: estatísticas multi-stat para inputs do piloto (2026-04-25, Proposal P1)
+-- Contexto: a média sozinha destrói a dinâmica intra-setor — peak/valley/std
+-- são necessárias para o modelo aprender PADRÕES (frenagem tardia, lockup,
+-- pulse de TC). Validação empírica: setores p10 vs p90 de delta_per_sector
+-- têm médias de inputs <5% diferentes; o sinal causal está nos extremos.
+-- Idempotente: ADD COLUMN IF NOT EXISTS é no-op se a coluna já existir.
+-- Total: 9 inputs × 3 estatísticas = 27 novas colunas (todas nullable, default NULL).
+-- Dados pré-migration: NULL → tratado como 0.0 pelo SectorModel via s.get(f, 0.0).
+
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS throttle_max FLOAT;
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS throttle_min FLOAT;
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS throttle_std FLOAT;
+
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS brake_max FLOAT;
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS brake_min FLOAT;
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS brake_std FLOAT;
+
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS steering_max FLOAT;
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS steering_min FLOAT;
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS steering_std FLOAT;
+
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS wheel_slip_fl_max FLOAT;
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS wheel_slip_fl_min FLOAT;
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS wheel_slip_fl_std FLOAT;
+
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS wheel_slip_fr_max FLOAT;
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS wheel_slip_fr_min FLOAT;
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS wheel_slip_fr_std FLOAT;
+
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS wheel_slip_rl_max FLOAT;
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS wheel_slip_rl_min FLOAT;
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS wheel_slip_rl_std FLOAT;
+
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS wheel_slip_rr_max FLOAT;
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS wheel_slip_rr_min FLOAT;
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS wheel_slip_rr_std FLOAT;
+
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS tc_active_max FLOAT;
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS tc_active_min FLOAT;
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS tc_active_std FLOAT;
+
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS abs_active_max FLOAT;
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS abs_active_min FLOAT;
+ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS abs_active_std FLOAT;
