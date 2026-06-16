@@ -270,7 +270,7 @@ def run(track_id: str, rate_hz: int) -> None:
                         # Scores de anomalia do SectorModel (em lote — 1 chamada numpy)
                         model_scores: dict[int, float] = {}
                         if sector_model.is_trained:
-                            batch_scores = sector_model.predict_batch(analyzed)
+                            batch_scores = sector_model.predict_batch(analyzed, car_model=car_model)
                             model_scores = dict(enumerate(batch_scores))
 
                         lap_report = report_builder.build(

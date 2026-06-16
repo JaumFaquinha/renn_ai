@@ -272,10 +272,12 @@ def evaluate_model(model: SectorModel, lap_data: list[dict]) -> dict:
     # que os deltas comparados são os mesmos usados durante o treino.
     all_sectors: list[dict] = []
     all_targets: list[float] = []
+    all_cars: list[str | None] = []
     n_outliers_filtered: int = 0
 
     for lap in lap_data:
         lap_sectors = lap.get("mini_sectors", [])
+        lap_car = (lap.get("car_model") or "").strip() or None
         prev_dvb: float | None = None
 
         for sector in lap_sectors:
@@ -311,6 +313,7 @@ def evaluate_model(model: SectorModel, lap_data: list[dict]) -> dict:
 
             all_sectors.append(sector)
             all_targets.append(target)
+            all_cars.append(lap_car)
 
     if not all_sectors:
         return {}
@@ -325,20 +328,12 @@ def evaluate_model(model: SectorModel, lap_data: list[dict]) -> dict:
     # severamente o ajuste real do modelo (ex: monza.pkl real R²=0.85,
     # mas clipped R²=0.17 — porque _max_delta=0.25s não consegue cobrir
     # deltas reais até 5s).
-    # `or 0.0` em vez de default do .get(): Supabase retorna chaves COM
-    # valor None para colunas NULL. Pré-migration P1: multi-stats são None.
+    # Usa o helper do próprio modelo — ele inclui as colunas one-hot do
+    # car_model (2026-06-15) na ordem correta esperada pelo scaler.
     X_eval = np.array(
-        [[float(s.get(f) or 0.0) for f in model._scaler.feature_names_in_] for s in all_sectors],
+        [model._row_for_sector(s, c) for s, c in zip(all_sectors, all_cars)],
         dtype=float,
-    ) if hasattr(model._scaler, "feature_names_in_") else None
-
-    if X_eval is None:
-        # Fallback: usa _FEATURE_FIELDS via SectorModel
-        from src.models.sector_model import _FEATURE_FIELDS
-        X_eval = np.array(
-            [[float(s.get(f) or 0.0) for f in _FEATURE_FIELDS] for s in all_sectors],
-            dtype=float,
-        )
+    )
     X_scaled = model._scaler.transform(X_eval)
     predicted_deltas = model._model.predict(X_scaled)
 
