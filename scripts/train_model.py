@@ -24,7 +24,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.settings import LAPS_DIR, MODELS_DIR, LOG_LEVEL, SUPABASE_ENABLED
-from src.models.sector_model import SectorModel, _DELTA_OUTLIER_THRESHOLD_S
+from src.models.sector_model import (
+    SectorModel,
+    _DELTA_OUTLIER_THRESHOLD_S,
+    _TRACK_POSITION_MIN,
+    _TRACK_POSITION_MAX,
+)
 
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
@@ -281,6 +286,17 @@ def evaluate_model(model: SectorModel, lap_data: list[dict]) -> dict:
         prev_dvb: float | None = None
 
         for sector in lap_sectors:
+            # Filtro posicional (2026-06-15) — mesmo do SectorModel.train(),
+            # mantém in-sample/CV consistente com a amostra de treino.
+            pos = sector.get("track_position")
+            if pos is not None:
+                try:
+                    pos_f = float(pos)
+                    if pos_f < _TRACK_POSITION_MIN or pos_f > _TRACK_POSITION_MAX:
+                        continue
+                except (TypeError, ValueError):
+                    pass
+
             # Usa `is not None` em vez de `in sector`: dados do Supabase carregam
             # todas as colunas selecionadas mesmo com valor NULL no banco
             # (mini-setores gravados antes da migração que introduziu
@@ -334,8 +350,10 @@ def evaluate_model(model: SectorModel, lap_data: list[dict]) -> dict:
         [model._row_for_sector(s, c) for s, c in zip(all_sectors, all_cars)],
         dtype=float,
     )
-    X_scaled = model._scaler.transform(X_eval)
-    predicted_deltas = model._model.predict(X_scaled)
+    # _scaler é None para modelos novos (HistGBR, tree-based, escala-livre).
+    if model._scaler is not None:
+        X_eval = model._scaler.transform(X_eval)
+    predicted_deltas = model._model.predict(X_eval)
 
     # scores_arr ainda é necessário para precision@10% (anomaly-score ranking)
     scores_arr = np.clip(predicted_deltas / max(model._max_delta, 1e-9), 0.0, 1.0)

@@ -20,6 +20,7 @@ from typing import Optional
 
 from config.settings import TOP_SECTORS_TO_REPORT, TRACK_MAPS_DIR
 from src.analysis.pattern_detector import PatternMatch
+from src.models.sector_model import _TRACK_POSITION_MAX, _TRACK_POSITION_MIN
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ class SectorReport:
     """Relatório consolidado de um mini-setor com maior perda."""
 
     track_position: float
-    delta_vs_best_s: float
+    delta_per_sector_s: float  # Perda dentro do setor (não cumulativo desde a largada)
     speed_min_kmh: float
     causes: list[PatternMatch]
     corner_name: Optional[str] = None
@@ -72,6 +73,17 @@ class ReportBuilder:
         """
         Constrói o relatório completo da volta.
 
+        Critério de ranking (2026-06-16): `delta_per_sector` (perda dentro
+        do mini-setor) em vez de `delta_vs_best` (delta cumulativo desde o
+        início da volta). O cumulativo carrega o ruído do reset do
+        performanceMeter no cruzamento da linha — gerava falsos +20s em
+        spline ≈ 0.000 mesmo em voltas limpas.
+
+        Filtro posicional (2026-06-16): descarta mini-setores com
+        track_position fora de [_TRACK_POSITION_MIN, _TRACK_POSITION_MAX]
+        (mesmos limites do SectorModel.train). Onde o performanceMeter
+        ainda está em transição entre voltas, qualquer ranking é ruído.
+
         Args:
             lap_number: número da volta na sessão
             lap_time_ms: tempo total da volta em ms
@@ -83,10 +95,21 @@ class ReportBuilder:
             LapReport com os N setores de maior perda, suas causas
             e model_score quando SectorModel disponível.
         """
-        # Ordenar por perda e pegar os N maiores
+        # Filtro posicional: descarta extremos da spline (artefatos de reset
+        # do performanceMeter). Preserva os índices originais para alinhar
+        # com pattern_results / model_scores.
+        candidates = [
+            (idx, sector)
+            for idx, sector in enumerate(analyzed_sectors)
+            if _TRACK_POSITION_MIN
+            <= float(sector.get("track_position") or 0.0)
+            <= _TRACK_POSITION_MAX
+        ]
+
+        # Ordena por delta_per_sector (perda local), não pelo cumulativo.
         sorted_sectors = sorted(
-            enumerate(analyzed_sectors),
-            key=lambda x: x[1].get("delta_vs_best", 0.0),
+            candidates,
+            key=lambda x: x[1].get("delta_per_sector", 0.0),
             reverse=True,
         )[:n_top]
 
@@ -95,7 +118,7 @@ class ReportBuilder:
 
         for idx, sector in sorted_sectors:
             position = sector["track_position"]
-            delta = sector.get("delta_vs_best", 0.0)
+            delta = sector.get("delta_per_sector", 0.0)
             total_lost += max(0.0, delta)
 
             corner = self._find_corner(position)
@@ -104,7 +127,7 @@ class ReportBuilder:
             sector_reports.append(
                 SectorReport(
                     track_position=round(position, 4),
-                    delta_vs_best_s=round(delta, 3),
+                    delta_per_sector_s=round(delta, 3),
                     speed_min_kmh=round(sector.get("speed_min", 0.0), 1),
                     causes=causes,
                     corner_name=corner.get("name") if corner else None,

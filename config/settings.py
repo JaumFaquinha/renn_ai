@@ -66,6 +66,36 @@ STEERING_THRESHOLD: float = 0.6           # steering normalizado > X
 # Ponto de troca subótimo
 RPM_SHIFT_MARGIN: float = 0.05            # % do maxRpm fora da faixa ótima
 
+# === Novos detectores (2026-06-16) ===
+# Trail-braking excessivo: piloto continua freando dentro da curva
+TRAIL_BRAKE_MIN_FLOOR: float = 0.10       # brake_min > X → ainda freando no fim do setor
+TRAIL_BRAKE_STEERING_MIN: float = 0.40    # steering_max > X → realmente curvando
+TRAIL_BRAKE_BRAKE_MAX: float = 0.30       # brake_max > X → frenagem não-desprezível
+
+# Coasting no apex: nem freia nem acelera no meio da curva
+COAST_THROTTLE_MAX: float = 0.20          # throttle (médio) < X
+COAST_BRAKE_MAX: float = 0.10             # brake (médio) < X
+COAST_STEERING_MIN: float = 0.30          # steering_max > X
+COAST_SPEED_MAX: float = 130.0            # speed_min < X km/h (curva lenta/média)
+
+# Understeer: steering alto + slip dianteiro alto sem TC
+UNDERSTEER_STEERING_MIN: float = 0.50     # steering_max > X
+UNDERSTEER_FRONT_SLIP_MIN: float = 0.15   # max(wheel_slip_fl/fr_max) > X
+
+# Oversteer / correção: alta variabilidade de steering + slip traseiro
+OVERSTEER_STEERING_STD_MIN: float = 0.10  # steering_std > X
+OVERSTEER_REAR_SLIP_MIN: float = 0.20     # max(wheel_slip_rl/rr_max) > X
+OVERSTEER_YAW_RATE_MIN: float = 0.30      # |local_ang_vel_z| > X rad/s
+
+# Hesitação no throttle: oscila o pé na reta ou saída
+THROTTLE_HESITATION_STD_MIN: float = 0.15 # throttle_std > X
+THROTTLE_HESITATION_STEERING_MAX: float = 0.20  # steering < X (reta)
+THROTTLE_HESITATION_SPEED_MIN: float = 100.0    # speed_kmh > X
+
+# Over-braking sem ABS: agressivo demais, mata velocidade sem bloquear
+OVER_BRAKING_BRAKE_MIN: float = 0.70      # brake_max > X
+OVER_BRAKING_SPEED_MAX: float = 80.0      # speed_min < X km/h
+
 # === Supabase — Fase 7 ===
 SUPABASE_ENABLED: bool = os.getenv("SUPABASE_ENABLED", "false").lower() == "true"
 SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")

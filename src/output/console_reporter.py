@@ -82,13 +82,13 @@ class ConsoleReporter:
         """Formata um mini-setor individual com tendência histórica opcional."""
         zone = sector.corner_name or f"Spline {sector.track_position:.3f}"
         corner_type = f" ({sector.corner_type})" if sector.corner_type else ""
-        trend = self._trend_indicator(sector.delta_vs_best_s, history)
+        trend = self._trend_indicator(sector.delta_per_sector_s, history)
 
         lines = [
             f"",
             f"  #{rank}  {zone}{corner_type}",
             f"      Posição    : {sector.track_position:.4f}",
-            f"      Perda      : +{sector.delta_vs_best_s:.3f}s{trend}",
+            f"      Perda      : +{sector.delta_per_sector_s:.3f}s{trend}",
             f"      Vel. mín.  : {sector.speed_min_kmh:.1f} km/h",
         ]
 

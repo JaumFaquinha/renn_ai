@@ -331,7 +331,7 @@ def run(track_id: str, rate_hz: int) -> None:
                             zone = top_sector.corner_name or f"spline {top_sector.track_position:.2f}"
                             cause = top_sector.causes[0].cause if top_sector.causes else "perda não identificada"
                             tts.speak(
-                                f"Perdeu {top_sector.delta_vs_best_s:.2f} segundos em {zone}. {cause}."
+                                f"Perdeu {top_sector.delta_per_sector_s:.2f} segundos em {zone}. {cause}."
                             )
 
                 # Manter frequência de amostragem
