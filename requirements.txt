@@ -22,7 +22,11 @@ pytest-cov==5.0.0
 # Formatação e lint
 ruff==0.6.9
 
-# TTS — Fase 6 (opcional)
+# TTS — Fase 6
+# pyttsx3 é o fallback offline padrão (TTS_FALLBACK) — dependência real, não
+# opcional. No Windows puxa `comtypes` automaticamente (driver SAPI5).
+pyttsx3==2.90
+# Providers cloud opcionais (descomente se for usar):
 # elevenlabs==1.5.0
 # azure-cognitiveservices-speech==1.40.0
 
