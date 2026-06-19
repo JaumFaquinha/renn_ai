@@ -68,7 +68,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_EDGE_VOICES_PT_BR = [
     "pt-BR-AntonioNeural",      # masculina, neutra
     "pt-BR-FranciscaNeural",    # feminina, neutra
-    "pt-BR-ThalitaNeural",      # feminina, expressiva
+    "pt-BR-ThalitaMultilingualNeural",  # feminina, expressiva (multilíngue)
 ]
 
 _VALID_PROVIDERS = {"none", "pyttsx3", "edge_tts", "elevenlabs", "azure"}
@@ -166,7 +166,7 @@ class TTSIntegration:
     # API pública
     # ------------------------------------------------------------------
 
-    def speak(self, message: str) -> None:
+    def speak(self, message: str, priority: bool = False) -> None:
         """
         Enfileira uma mensagem para síntese de voz.
 
@@ -175,6 +175,11 @@ class TTSIntegration:
           aumentam TTFB de síntese; engenheiro de corrida é direto e curto.
         - Aplica cooldown (TTS_MIN_INTERVAL_S): evita falar 2 alertas em
           janela curta — usuário não consegue processar overlap.
+
+        Args:
+            message: texto a falar.
+            priority: se True, ignora o cooldown — para alertas que não podem
+                ser suprimidos (ex.: sinal de volta inválida).
         """
         if not message:
             return
@@ -186,7 +191,7 @@ class TTSIntegration:
             return
 
         now = time.monotonic()
-        if (now - self._last_spoken_at) < self._min_interval_s:
+        if not priority and (now - self._last_spoken_at) < self._min_interval_s:
             logger.debug(
                 "TTS suprimido por cooldown",
                 extra={"since_last_s": round(now - self._last_spoken_at, 2)},

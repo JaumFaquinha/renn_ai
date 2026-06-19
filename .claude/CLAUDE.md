@@ -193,7 +193,7 @@ Campos não gravados no schema de mini-setor mas usados para validar se a volta/
 |---|---|---|
 | `status` | SPageFileGraphic | Descartar se ≠ `AC_LIVE (2)` |
 | `flag` | SPageFileGraphic | Descartar setores com `AC_YELLOW_FLAG` ou superior |
-| `numberOfTyresOut` | SPageFilePhysics | Descartar setor se > 0 |
+| `numberOfTyresOut` | SPageFilePhysics | Descartar volta se > 2 (3+ pneus fora); configurável via `MAX_TYRES_OUT_ALLOWED`. 2 pneus na zebra/grama é tolerado. |
 | `pitLimiterOn` | SPageFilePhysics | Descartar setor se = 1 |
 | `isInPit` | SPageFileGraphic | Descartar volta se = 1 em qualquer ponto |
 | `isInPitLane` | SPageFileGraphic | Descartar volta se = 1 |

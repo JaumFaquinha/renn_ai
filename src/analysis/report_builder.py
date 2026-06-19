@@ -35,6 +35,7 @@ class SectorReport:
     causes: list[PatternMatch]
     corner_name: Optional[str] = None
     corner_type: Optional[str] = None
+    sector_name: Optional[str] = None  # Setor oficial (ex.: "Setor 2") da posição na spline
     model_score: Optional[float] = None  # Anomaly score do SectorModel 0.0–1.0
 
 
@@ -132,6 +133,7 @@ class ReportBuilder:
                     causes=causes,
                     corner_name=corner.get("name") if corner else None,
                     corner_type=corner.get("type") if corner else None,
+                    sector_name=self._find_sector(position),
                     model_score=model_scores.get(idx) if model_scores else None,
                 )
             )
@@ -178,5 +180,24 @@ class ReportBuilder:
             if len(spline_range) == 2:
                 if spline_range[0] <= position <= spline_range[1]:
                     return corner
+
+        return None
+
+    def _find_sector(self, position: float) -> Optional[str]:
+        """
+        Nome do setor oficial em que a posição da spline se encontra.
+
+        Usado como rótulo de zona quando a posição não cai em nenhuma curva
+        nomeada (ex.: trechos de reta) — comunica o setor em vez do valor cru
+        da spline. Retorna None se não houver track map com setores definidos.
+        """
+        if not self._track_map:
+            return None
+
+        for sector in self._track_map.get("sectors", []):
+            start = sector.get("spline_start")
+            end = sector.get("spline_end")
+            if start is not None and end is not None and start <= position <= end:
+                return sector.get("name")
 
         return None

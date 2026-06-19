@@ -80,7 +80,7 @@ class ConsoleReporter:
         history: list[dict],
     ) -> list[str]:
         """Formata um mini-setor individual com tendência histórica opcional."""
-        zone = sector.corner_name or f"Spline {sector.track_position:.3f}"
+        zone = sector.corner_name or sector.sector_name or f"Spline {sector.track_position:.3f}"
         corner_type = f" ({sector.corner_type})" if sector.corner_type else ""
         trend = self._trend_indicator(sector.delta_per_sector_s, history)
 

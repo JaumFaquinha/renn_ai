@@ -31,6 +31,10 @@ PERFORMANCE_METER_FIELD: str = "performanceMeter"
 # Descarta volta se qualquer componente de dano ultrapassar este valor (0.0–1.0)
 CAR_DAMAGE_THRESHOLD: float = float(os.getenv("CAR_DAMAGE_THRESHOLD", "0.1"))
 
+# Pneus fora da pista: a volta só é invalidada com MAIS de N pneus fora.
+# 2 (padrão) → invalida a partir de 3 pneus fora (2 pneus na zebra/grama é tolerado).
+MAX_TYRES_OUT_ALLOWED: int = int(os.getenv("MAX_TYRES_OUT_ALLOWED", "2"))
+
 # Número mínimo de mini-setores para uma volta ser considerada válida
 MIN_SECTORS_PER_LAP: int = int(os.getenv("MIN_SECTORS_PER_LAP", "80"))  # ~80% da pista mínimo
 
@@ -109,8 +113,9 @@ TTS_PROVIDER: str = os.getenv("TTS_PROVIDER", "none")
 TTS_FALLBACK: str = os.getenv("TTS_FALLBACK", "pyttsx3")
 TTS_LANGUAGE: str = os.getenv("TTS_LANGUAGE", "pt-BR")
 TTS_VOICE_NAME: str = os.getenv("TTS_VOICE_NAME", "")
-# Truncamento de mensagens longas — reduz TTFB de síntese
-TTS_MAX_MESSAGE_CHARS: int = int(os.getenv("TTS_MAX_MESSAGE_CHARS", "140"))
+# Truncamento de mensagens longas — reduz TTFB de síntese.
+# 220: acomoda a mensagem rica (contexto + pior zona + até 2 causas) sem cortar.
+TTS_MAX_MESSAGE_CHARS: int = int(os.getenv("TTS_MAX_MESSAGE_CHARS", "220"))
 # Cooldown entre alertas (segundos) — evita overlap auditivo
 TTS_MIN_INTERVAL_S: float = float(os.getenv("TTS_MIN_INTERVAL_S", "3.0"))
 
@@ -118,6 +123,21 @@ ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID: str = os.getenv("ELEVENLABS_VOICE_ID", "")
 AZURE_SPEECH_KEY: str = os.getenv("AZURE_SPEECH_KEY", "")
 AZURE_SPEECH_REGION: str = os.getenv("AZURE_SPEECH_REGION", "")
+
+# === Feedback de voz (mensagem do engenheiro) — Fase 6 ===
+# Volta é "boa" se a anomalia máxima prevista pelo modelo nos setores
+# reportados ficar abaixo deste valor (score 0.0 normal → 1.0 perda severa).
+GOOD_LAP_ANOMALY_MAX: float = float(os.getenv("GOOD_LAP_ANOMALY_MAX", "0.30"))
+# Sem modelo treinado: volta é "boa" se a perda total ficar abaixo disto (s).
+GOOD_LAP_TOTAL_LOSS_MAX_S: float = float(os.getenv("GOOD_LAP_TOTAL_LOSS_MAX_S", "0.15"))
+# Só menciona um segundo setor na mensagem se a perda dele for ≥ isto (s).
+VOICE_SECONDARY_SECTOR_MIN_LOSS_S: float = float(
+    os.getenv("VOICE_SECONDARY_SECTOR_MIN_LOSS_S", "0.10")
+)
+# Mensagem híbrida: numa volta boa/recorde, menciona a maior oportunidade
+# restante só se o ganho potencial no pior setor for ≥ isto (s). Abaixo,
+# a mensagem fica puramente elogiosa.
+VOICE_HYBRID_MIN_GAIN_S: float = float(os.getenv("VOICE_HYBRID_MIN_GAIN_S", "0.08"))
 
 # === Logging ===
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
