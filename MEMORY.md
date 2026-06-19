@@ -188,3 +188,4 @@
 - **Linux VM (este ambiente):** sem acesso a pip externo (proxy 403); usar para edição de código e testes offline apenas
 - **Testes sem sklearn:** 13 testes de `TestUntrained`, `TestTrainInsufficient` e `TestSaveLoad` (arquivo não existente) passam no Linux VM via `python3`
 - **Testes completos:** executar `py -3.11 -m pytest tests/ -v` na máquina Windows
+- [supabase-query-limits](memory/supabase-query-limits.md) — voltas em Supabase + JSON local; limites do PostgREST (1000 linhas, URL longa) truncavam consultas; clone novo tem `data/laps/` vazio
