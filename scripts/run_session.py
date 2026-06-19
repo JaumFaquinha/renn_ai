@@ -15,8 +15,10 @@ Requer:
 import argparse
 import concurrent.futures
 import logging
+import os
 import signal
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -31,6 +33,7 @@ from src.memory.shared_memory_reader import SharedMemoryReader, snapshot_to_dict
 from src.models.sector_model import SectorModel
 from src.output.console_reporter import ConsoleReporter
 from src.output.tts_integration import TTSIntegration
+from src.output.voice_message import build_voice_message
 from src.persistence.supabase_client import SupabaseClient
 from src.persistence.lap_uploader import LapUploader
 from src.persistence.query_service import QueryService
@@ -45,6 +48,46 @@ logging.basicConfig(
 logger = logging.getLogger("run_session")
 
 _RUNNING = True
+
+# --- Trava de instância única ---------------------------------------------
+# Dois processos run_session.py rodando ao mesmo tempo leem a MESMA Shared
+# Memory do AC e gravam DUAS sessões no Supabase (causa raiz da sessão dobrada
+# de 2026-06-10: dois INSERTs em sessions a 11ms de distância, com voltas
+# sobrepostas). O lock abaixo barra a segunda instância no ato.
+_LOCK_PATH = Path(tempfile.gettempdir()) / "renn_ai_run_session.lock"
+_lock_handle = None  # mantém o handle aberto pelo tempo de vida do processo
+
+
+def _acquire_single_instance_lock() -> bool:
+    """
+    Adquire um lock exclusivo de arquivo para garantir uma única instância.
+
+    O lock é de nível de SO (msvcrt no Windows, fcntl no POSIX) e é liberado
+    automaticamente quando o processo termina — inclusive em crash —, então não
+    há risco de lock órfão travando execuções futuras.
+
+    Returns:
+        True se o lock foi adquirido; False se outra instância já o detém.
+    """
+    global _lock_handle
+    _lock_handle = open(_LOCK_PATH, "w")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(_lock_handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(_lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        _lock_handle.close()
+        _lock_handle = None
+        return False
+    try:
+        _lock_handle.write(str(os.getpid()))
+        _lock_handle.flush()
+    except OSError:
+        pass  # PID é só diagnóstico — não afeta a trava
+    return True
 
 # Mapeamento do int de SPageFileGraphic.session para string canônica
 _SESSION_TYPE_MAP: dict[int, str] = {
@@ -152,6 +195,9 @@ def run(track_id: str, rate_hz: int) -> None:
             track_id=track_id,
             car_model=car_model,
             session_type=session_type_str,
+            # Sinal falado imediato quando a volta é invalidada (priority=True
+            # ignora o cooldown para o alerta nunca ser suprimido).
+            on_lap_invalidated=lambda reason: tts.speak("Volta inválida.", priority=True),
         )
 
         # Carregar SectorModel treinado (se disponível para esta pista)
@@ -325,14 +371,16 @@ def run(track_id: str, rate_hz: int) -> None:
                                 extra={"lap_time_ms": current_lap_time},
                             )
 
-                        # Feedback de voz (top perda)
-                        if lap_report.top_sectors:
-                            top_sector = lap_report.top_sectors[0]
-                            zone = top_sector.corner_name or f"spline {top_sector.track_position:.2f}"
-                            cause = top_sector.causes[0].cause if top_sector.causes else "perda não identificada"
-                            tts.speak(
-                                f"Perdeu {top_sector.delta_per_sector_s:.2f} segundos em {zone}. {cause}."
-                            )
+                        # Feedback de voz — mensagem rica em contexto/causas na
+                        # perda, ou positiva quando o modelo não prevê perda
+                        # relevante (volta boa / melhor da sessão / recorde).
+                        voice_msg = build_voice_message(
+                            lap_report,
+                            is_session_best=is_session_best,
+                            is_alltime_best=is_alltime_best,
+                        )
+                        if voice_msg:
+                            tts.speak(voice_msg)
 
                 # Manter frequência de amostragem
                 elapsed = time.monotonic() - t_start
@@ -352,5 +400,12 @@ def run(track_id: str, rate_hz: int) -> None:
 
 
 if __name__ == "__main__":
+    if not _acquire_single_instance_lock():
+        logger.error(
+            "Outra instância de run_session.py já está em execução. Encerre-a "
+            "antes de iniciar uma nova — dois processos lendo a mesma Shared "
+            "Memory gravam sessões duplicadas no Supabase."
+        )
+        sys.exit(1)
     args = parse_args()
     run(track_id=args.track, rate_hz=args.rate)
