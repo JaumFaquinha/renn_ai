@@ -10,13 +10,14 @@ Providers suportados (ordem de prioridade prática para sim-racing):
 | ------------ | ---------------- | ---------------- | ------- | --------- |
 | pyttsx3      | Free             | 50–150ms         | sim     | mid       |
 | edge_tts     | Free, sem chave  | 250–500ms        | não     | neural    |
-| elevenlabs   | Free 10k chars/m | 75–200ms (Flash) | não     | excelente |
+| elevenlabs   | 0,5 créd/char    | ~200–500ms (Flash)| não     | excelente |
 | azure        | Free 500k/m      | 200–500ms        | não     | excelente |
 | none         | —                | 0                | —       | — (texto) |
 
 Fallback automático: se o provider escolhido falhar (ImportError, sem chave,
-sem rede), cai para `pyttsx3` (Windows SAPI5, sempre disponível em Win10/11).
-Se nem pyttsx3 estiver instalado, cai para "none" (apenas texto).
+sem rede), cai para `pyttsx3` (Windows SAPI5 — declarado no requirements.txt;
+requer `pip install pyttsx3`, que puxa `comtypes`. O engine SAPI5 em si é nativo
+do Win10/11, mas o binding Python não). Se nem pyttsx3 instalar, cai para "none".
 
 Cada chamada de speak() registra `synthesis_ms` e `audio_ms` em log estruturado
 para o benchmark e diagnóstico de latência.
@@ -67,7 +68,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_EDGE_VOICES_PT_BR = [
     "pt-BR-AntonioNeural",      # masculina, neutra
     "pt-BR-FranciscaNeural",    # feminina, neutra
-    "pt-BR-ThalitaNeural",      # feminina, expressiva
+    "pt-BR-ThalitaMultilingualNeural",  # feminina, expressiva (multilíngue)
 ]
 
 _VALID_PROVIDERS = {"none", "pyttsx3", "edge_tts", "elevenlabs", "azure"}
@@ -115,6 +116,9 @@ class TTSIntegration:
         # (alguns providers ex: pyttsx3 prendem o objeto à thread criadora)
         self._engine_ready: bool = False
         self._synthesizer: Optional[Callable[[str], float]] = None
+        # Referência ao engine pyttsx3 — permite que stop() interrompa um
+        # playback longo em andamento (ver _init_pyttsx3 / stop).
+        self._pyttsx3_engine: Optional[object] = None
 
         if self._provider != "none":
             self._validate()
@@ -145,6 +149,14 @@ class TTSIntegration:
     def stop(self) -> None:
         """Para a thread de TTS graciosamente. Drena a fila por até 5s."""
         self._running = False
+        # Best-effort: interrompe um playback em andamento (ex.: pyttsx3 no meio
+        # de uma fala longa) para o join abaixo não estourar o timeout. A chamada
+        # é cross-thread (COM/SAPI5), por isso protegida — no pior caso é no-op.
+        if self._pyttsx3_engine is not None:
+            try:
+                self._pyttsx3_engine.stop()  # type: ignore[attr-defined]
+            except Exception:
+                pass
         self._queue.put(None)  # Poison pill
         if self._thread is not None:
             self._thread.join(timeout=5.0)
@@ -154,7 +166,7 @@ class TTSIntegration:
     # API pública
     # ------------------------------------------------------------------
 
-    def speak(self, message: str) -> None:
+    def speak(self, message: str, priority: bool = False) -> None:
         """
         Enfileira uma mensagem para síntese de voz.
 
@@ -163,6 +175,11 @@ class TTSIntegration:
           aumentam TTFB de síntese; engenheiro de corrida é direto e curto.
         - Aplica cooldown (TTS_MIN_INTERVAL_S): evita falar 2 alertas em
           janela curta — usuário não consegue processar overlap.
+
+        Args:
+            message: texto a falar.
+            priority: se True, ignora o cooldown — para alertas que não podem
+                ser suprimidos (ex.: sinal de volta inválida).
         """
         if not message:
             return
@@ -174,7 +191,7 @@ class TTSIntegration:
             return
 
         now = time.monotonic()
-        if (now - self._last_spoken_at) < self._min_interval_s:
+        if not priority and (now - self._last_spoken_at) < self._min_interval_s:
             logger.debug(
                 "TTS suprimido por cooldown",
                 extra={"since_last_s": round(now - self._last_spoken_at, 2)},
@@ -287,29 +304,58 @@ class TTSIntegration:
 
         try:
             engine = pyttsx3.init()
-            # Tentativa de selecionar voz PT-BR (Maria/Daniel/Microsoft Helena etc.)
+            # Seleção de voz em dois passes — a intenção explícita do usuário
+            # (TTS_VOICE_NAME) tem prioridade sobre a heurística de idioma:
+            #   1) match pelo nome pedido (ex.: "Daniel")
+            #   2) fallback heurístico pt-BR por nome (ex.: "Microsoft Maria
+            #      Desktop - Portuguese(Brazil)")
+            # Obs.: o driver SAPI5 do pyttsx3 não popula `voice.languages` no
+            # Windows (lista vazia), por isso o match é feito apenas pelo nome.
             voices = engine.getProperty("voices") or []
-            target = None
-            for v in voices:
-                vname = (getattr(v, "name", "") or "").lower()
-                vlang = " ".join(str(x) for x in (getattr(v, "languages", []) or []))
-                if (
-                    self._voice_name and self._voice_name.lower() in vname
-                ) or "portuguese" in vname or "pt-br" in vname.lower() or "br" in vlang.lower():
-                    target = v
-                    break
+
+            def _select_voice():
+                if self._voice_name:
+                    wanted = self._voice_name.lower()
+                    for v in voices:
+                        if wanted in (getattr(v, "name", "") or "").lower():
+                            return v
+                for v in voices:
+                    vname = (getattr(v, "name", "") or "").lower()
+                    if "portuguese" in vname or "pt-br" in vname or "português" in vname:
+                        return v
+                return None
+
+            target = _select_voice()
             if target is not None:
                 engine.setProperty("voice", target.id)
                 logger.info("pyttsx3 voz selecionada", extra={"voice": target.name})
+            elif self._voice_name:
+                logger.warning(
+                    "pyttsx3 voz pedida não encontrada — usando voz padrão do sistema",
+                    extra={"requested": self._voice_name},
+                )
             engine.setProperty("rate", 190)  # ~190wpm — engenheiro objetivo
         except Exception as exc:
             logger.warning("pyttsx3 init falhou", extra={"error": str(exc)})
             return None
 
+        # Exposto para stop() poder interromper um playback longo (cross-thread).
+        self._pyttsx3_engine = engine
+
         def synth(message: str) -> float:
             t0 = time.monotonic()
             engine.say(message)
-            engine.runAndWait()  # bloqueia ATÉ o áudio terminar — síncrono por design SAPI5
+            try:
+                engine.runAndWait()  # bloqueia ATÉ o áudio terminar — síncrono no SAPI5
+            except RuntimeError:
+                # Bug conhecido do pyttsx3: "run loop already started" quando um
+                # loop anterior não foi encerrado. Encerra o loop preso e tenta
+                # uma vez mais antes de propagar o erro ao worker.
+                try:
+                    engine.endLoop()
+                except Exception:
+                    pass
+                engine.runAndWait()
             # No SAPI5, runAndWait inclui síntese E playback. Não dá para separar
             # sem reescrever via stream — reportamos o total como synthesis_ms.
             return (time.monotonic() - t0) * 1000
@@ -406,7 +452,11 @@ class TTSIntegration:
             import soundfile as sf
 
             t0 = time.monotonic()
-            # Flash v2.5 — modelo de baixa latência (~75ms TTFB no servidor)
+            # Flash v2.5 — modelo mais rápido do ElevenLabs. Os ~75ms divulgados
+            # são tempo de INFERÊNCIA no servidor; o end-to-end percebido fica em
+            # ~200–500ms somando rede + decode de MP3 + playback. PCM (pcm_22050)
+            # eliminaria o decode, mas é headerless e exigiria enquadrar o buffer
+            # manualmente — overkill para um relatório curto de fim de volta.
             audio_iter = client.text_to_speech.convert(
                 voice_id=ELEVENLABS_VOICE_ID,
                 model_id="eleven_flash_v2_5",
@@ -415,6 +465,18 @@ class TTSIntegration:
             )
             audio_bytes = b"".join(audio_iter)
             t_synth = (time.monotonic() - t0) * 1000
+
+            # Observabilidade de custo: Flash bilha 0,5 crédito/caractere. Logamos
+            # a estimativa determinística — o header `character-cost` da resposta
+            # seria a fonte autoritativa, mas o SDK abstrai o response no caminho
+            # de streaming do convert().
+            logger.info(
+                "ElevenLabs síntese",
+                extra={
+                    "chars": len(message),
+                    "estimated_credits": round(len(message) * 0.5, 1),
+                },
+            )
 
             data, sr = sf.read(io.BytesIO(audio_bytes))
             sd.play(data, sr)

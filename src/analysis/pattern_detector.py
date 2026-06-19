@@ -1,20 +1,25 @@
 """
-PatternDetector — FASE 4
+PatternDetector — FASE 4 (estendida 2026-06-16)
 
 Correlaciona padrões de telemetria com causas específicas de perda de tempo.
 
-Implementa os 5 padrões definidos em CLAUDE.md §5:
-1. Frenagem tardia com bloqueio (brake alto + abs ativo + speed_min baixo)
-2. Aceleração precoce/agressiva (throttle baixo + tc ativo + wheel_slip alto)
-3. Entrada de curva rápida demais (gforce_x alto + steering alto + speed alto)
+Padrões originais (CLAUDE.md §5):
+1. Frenagem tardia com bloqueio (brake alto + abs ativo)
+2. Aceleração precoce/agressiva (throttle alto + tc ativo + wheel_slip alto)
+3. Entrada de curva rápida demais (gforce lateral + steering + speed)
 4. Ponto de troca subótimo (gear incorreta + RPM fora do range)
 5. Saída de curva comprometida (throttle parcial em reta longa)
 
-Critérios de aceite (CLAUDE.md §6 FASE 4):
-- [x] Todos os 5 padrões implementados
-- [x] Cada setor com perda retorna ao menos uma causa identificada
-- [x] Confiança expressada como float (0.0–1.0)
-- [x] Casos ambíguos retornam lista ordenada por confiança
+Padrões adicionais (2026-06-16, lacunas observadas em log Monza V10):
+6. Trail-braking excessivo (brake_min + steering_max simultâneos)
+7. Coasting no apex (throttle baixo + brake baixo + steering alto)
+8. Understeer (steering alto + slip dianteiro alto, sem TC)
+9. Oversteer / correção (steering_std alto + slip traseiro + yaw)
+10. Hesitação no throttle (throttle_std alto na reta)
+11. Over-braking sem ABS (brake alto + speed_min muito baixo)
+
+Padrões 6–11 usam estatísticas multi-stat (_max, _min, _std) introduzidas
+pela Proposal P1 (sector_aggregator.py 2026-04-25).
 """
 
 import logging
@@ -22,10 +27,27 @@ from dataclasses import dataclass, field
 
 from config.settings import (
     ABS_ACTIVE_THRESHOLD,
+    COAST_BRAKE_MAX,
+    COAST_SPEED_MAX,
+    COAST_STEERING_MIN,
+    COAST_THROTTLE_MAX,
     GFORCE_LATERAL_THRESHOLD,
+    OVER_BRAKING_BRAKE_MIN,
+    OVER_BRAKING_SPEED_MAX,
+    OVERSTEER_REAR_SLIP_MIN,
+    OVERSTEER_STEERING_STD_MIN,
+    OVERSTEER_YAW_RATE_MIN,
     RPM_SHIFT_MARGIN,
     STEERING_THRESHOLD,
     TC_ACTIVE_THRESHOLD,
+    THROTTLE_HESITATION_SPEED_MIN,
+    THROTTLE_HESITATION_STD_MIN,
+    THROTTLE_HESITATION_STEERING_MAX,
+    TRAIL_BRAKE_BRAKE_MAX,
+    TRAIL_BRAKE_MIN_FLOOR,
+    TRAIL_BRAKE_STEERING_MIN,
+    UNDERSTEER_FRONT_SLIP_MIN,
+    UNDERSTEER_STEERING_MIN,
     WHEEL_SLIP_THRESHOLD,
 )
 
@@ -71,7 +93,11 @@ class PatternDetector:
             Lista de PatternMatch ordenada por confiança decrescente.
             Pode estar vazia se nenhum padrão for detectado.
         """
-        delta = sector.get("delta_vs_best", 0.0)
+        # 2026-06-16: filtra por delta_per_sector (perda local) em vez de
+        # delta_vs_best (cumulativo desde a largada). Alinha com o ranking
+        # do ReportBuilder e evita ignorar setores com perda real cuja
+        # soma cumulativa ainda é baixa.
+        delta = sector.get("delta_per_sector", sector.get("delta_vs_best", 0.0))
         if delta < _MIN_DELTA_TO_ANALYZE:
             return []
 
@@ -81,6 +107,12 @@ class PatternDetector:
             self._detect_fast_corner_entry,
             self._detect_suboptimal_shift,
             self._detect_compromised_exit,
+            self._detect_trail_braking,
+            self._detect_coasting,
+            self._detect_understeer,
+            self._detect_oversteer,
+            self._detect_throttle_hesitation,
+            self._detect_over_braking,
         ]
 
         matches = []
@@ -226,14 +258,20 @@ class PatternDetector:
         """
         Padrão 5: Saída de curva comprometida.
 
-        Sinais: throttle parcial em reta longa (steering baixo + speed alta + throttle < 1.0).
+        Sinais: throttle parcial em reta longa (steering_max baixo +
+        speed alta + throttle < 1.0).
+
+        2026-06-16: filtro de "reta" usa steering_max em vez do steering
+        médio. Em mini-setores que contêm o ápice de uma curva, a média
+        pode ser baixa mesmo quando o pico não é — o que disparava
+        falsos positivos em Lesmo/Variante.
         """
         throttle = sector.get("throttle", 0.0)
-        steering = abs(sector.get("steering", 0.0))
+        steering_max = abs(sector.get("steering_max", sector.get("steering", 0.0)))
         speed = sector.get("speed_kmh", 0.0)
 
-        # Só relevante em retas (steering baixo) a velocidade alta
-        if steering > 0.2:
+        # Só relevante em retas (steering_max baixo) a velocidade alta
+        if steering_max > 0.2:
             return None
         if speed < 150.0:
             return None
@@ -250,6 +288,240 @@ class PatternDetector:
             evidence={
                 "throttle": throttle,
                 "speed_kmh": speed,
-                "steering": steering,
+                "steering_max": steering_max,
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # Detectores adicionais (2026-06-16)
+    # Usam estatísticas multi-stat (Proposal P1, sector_aggregator §_MULTI_STAT_INPUT_FIELDS).
+    # ------------------------------------------------------------------
+
+    def _detect_trail_braking(self, sector: dict) -> PatternMatch | None:
+        """
+        Padrão 6: Trail-braking excessivo.
+
+        Sinais: brake_min > floor (piloto ainda freia no fim do setor)
+                + steering_max alto (realmente curvando)
+                + brake_max não-desprezível (frenagem não foi residual).
+
+        Discrimina contra freio leve passageiro: brake_min capta a
+        cauda da frenagem que invade o apex.
+        """
+        brake_min = sector.get("brake_min", 0.0)
+        brake_max = sector.get("brake_max", 0.0)
+        steering_max = abs(sector.get("steering_max", 0.0))
+
+        if brake_min < TRAIL_BRAKE_MIN_FLOOR:
+            return None
+        if steering_max < TRAIL_BRAKE_STEERING_MIN:
+            return None
+        if brake_max < TRAIL_BRAKE_BRAKE_MAX:
+            return None
+
+        # Confiança: quanto mais brake_min e steering, mais grave
+        confidence = min(
+            1.0,
+            (brake_min / 0.5) * 0.5 + (steering_max / 1.0) * 0.5,
+        )
+
+        return PatternMatch(
+            cause="Trail-braking excessivo — freio invade o ápice da curva",
+            confidence=round(confidence, 3),
+            evidence={
+                "brake_min": brake_min,
+                "brake_max": brake_max,
+                "steering_max": steering_max,
+            },
+        )
+
+    def _detect_coasting(self, sector: dict) -> PatternMatch | None:
+        """
+        Padrão 7: Coasting / lift-off no apex.
+
+        Sinais: throttle baixo + brake baixo + steering alto + speed_min baixo.
+        Indica o piloto "esperando" a curva passar sem comando ativo —
+        comportamento defensivo que mata a saída.
+        """
+        throttle = sector.get("throttle", 0.0)
+        brake = sector.get("brake", 0.0)
+        steering_max = abs(sector.get("steering_max", 0.0))
+        speed_min = sector.get("speed_min", 0.0)
+
+        if throttle > COAST_THROTTLE_MAX:
+            return None
+        if brake > COAST_BRAKE_MAX:
+            return None
+        if steering_max < COAST_STEERING_MIN:
+            return None
+        if speed_min > COAST_SPEED_MAX:
+            return None
+
+        # Confiança proporcional à "ausência de comando"
+        coast_gap = (COAST_THROTTLE_MAX - throttle) + (COAST_BRAKE_MAX - brake)
+        confidence = min(1.0, coast_gap * 2.0 + steering_max * 0.3)
+
+        return PatternMatch(
+            cause="Coasting no ápice — nem freia nem acelera dentro da curva",
+            confidence=round(confidence, 3),
+            evidence={
+                "throttle": throttle,
+                "brake": brake,
+                "steering_max": steering_max,
+                "speed_min": speed_min,
+            },
+        )
+
+    def _detect_understeer(self, sector: dict) -> PatternMatch | None:
+        """
+        Padrão 8: Understeer (carro "reto" na curva).
+
+        Sinais: steering_max alto + slip dianteiro alto + TC inativo.
+
+        TC inativo distingue de aceleração precoce (padrão 2).
+        Slip dianteiro alto sem freio (não é ABS) confirma falta de aderência
+        no eixo dianteiro.
+        """
+        steering_max = abs(sector.get("steering_max", 0.0))
+        front_slip_max = max(
+            sector.get("wheel_slip_fl_max", 0.0),
+            sector.get("wheel_slip_fr_max", 0.0),
+        )
+        tc_active = sector.get("tc_active", 0.0)
+
+        if steering_max < UNDERSTEER_STEERING_MIN:
+            return None
+        if front_slip_max < UNDERSTEER_FRONT_SLIP_MIN:
+            return None
+        if tc_active >= TC_ACTIVE_THRESHOLD:
+            # Aceleração agressiva tomando conta — outro padrão cuida disso
+            return None
+
+        confidence = min(
+            1.0,
+            (steering_max / 1.0) * 0.4 + (front_slip_max / 0.4) * 0.6,
+        )
+
+        return PatternMatch(
+            cause="Understeer — eixo dianteiro escorregando, falta rotação",
+            confidence=round(confidence, 3),
+            evidence={
+                "steering_max": steering_max,
+                "front_slip_max": round(front_slip_max, 4),
+                "tc_active": tc_active,
+            },
+        )
+
+    def _detect_oversteer(self, sector: dict) -> PatternMatch | None:
+        """
+        Padrão 9: Oversteer com correção.
+
+        Sinais: alta variabilidade de steering (steering_std) +
+                slip traseiro alto + yaw rate elevado (|local_ang_vel_z|).
+
+        steering_std capta as correções de contra-volante; yaw rate
+        confirma rotação do carro acima do esperado para o steering médio.
+        """
+        steering_std = sector.get("steering_std", 0.0)
+        rear_slip_max = max(
+            sector.get("wheel_slip_rl_max", 0.0),
+            sector.get("wheel_slip_rr_max", 0.0),
+        )
+        yaw_rate = abs(sector.get("local_ang_vel_z", 0.0))
+
+        if steering_std < OVERSTEER_STEERING_STD_MIN:
+            return None
+        if rear_slip_max < OVERSTEER_REAR_SLIP_MIN:
+            return None
+        if yaw_rate < OVERSTEER_YAW_RATE_MIN:
+            return None
+
+        confidence = min(
+            1.0,
+            (steering_std / 0.3) * 0.4
+            + (rear_slip_max / 0.5) * 0.4
+            + (yaw_rate / 1.0) * 0.2,
+        )
+
+        return PatternMatch(
+            cause="Oversteer — traseira escorregando, correções de volante",
+            confidence=round(confidence, 3),
+            evidence={
+                "steering_std": round(steering_std, 4),
+                "rear_slip_max": round(rear_slip_max, 4),
+                "yaw_rate": round(yaw_rate, 4),
+            },
+        )
+
+    def _detect_throttle_hesitation(self, sector: dict) -> PatternMatch | None:
+        """
+        Padrão 10: Hesitação no throttle (reta ou saída).
+
+        Sinais: throttle_std alto + steering_max baixo (reta de verdade)
+        + speed elevada.
+
+        2026-06-16: filtro de "reta" usa steering_max em vez do steering
+        médio. Mini-setores que cobrem um ápice (Lesmo, Variante) têm
+        steering médio baixo mesmo com pico > 0.6 — eram falsos positivos.
+        Captura indecisão pós-curva ou modulação desnecessária em reta.
+        """
+        throttle_std = sector.get("throttle_std", 0.0)
+        steering_max = abs(sector.get("steering_max", sector.get("steering", 0.0)))
+        speed = sector.get("speed_kmh", 0.0)
+
+        if throttle_std < THROTTLE_HESITATION_STD_MIN:
+            return None
+        if steering_max > THROTTLE_HESITATION_STEERING_MAX:
+            return None
+        if speed < THROTTLE_HESITATION_SPEED_MIN:
+            return None
+
+        confidence = min(1.0, (throttle_std / 0.4) * 0.7 + (speed / 300.0) * 0.3)
+        if confidence < 0.20:
+            return None
+
+        return PatternMatch(
+            cause="Hesitação no acelerador — oscilação na reta/saída",
+            confidence=round(confidence, 3),
+            evidence={
+                "throttle_std": round(throttle_std, 4),
+                "steering_max": steering_max,
+                "speed_kmh": speed,
+            },
+        )
+
+    def _detect_over_braking(self, sector: dict) -> PatternMatch | None:
+        """
+        Padrão 11: Over-braking sem ABS.
+
+        Sinais: brake_max alto + speed_min muito baixo + ABS inativo.
+
+        Diferente do padrão 1 (frenagem tardia COM ABS): aqui o piloto
+        freou agressivamente sem bloquear, mas matou velocidade mínima —
+        ponto de freio cedo demais ou pressão excessiva.
+        """
+        brake_max = sector.get("brake_max", 0.0)
+        speed_min = sector.get("speed_min", 0.0)
+        abs_active = sector.get("abs_active", 0.0)
+
+        if brake_max < OVER_BRAKING_BRAKE_MIN:
+            return None
+        if speed_min > OVER_BRAKING_SPEED_MAX:
+            return None
+        if abs_active >= ABS_ACTIVE_THRESHOLD:
+            # Tem ABS → cai em "frenagem tardia com bloqueio" (padrão 1)
+            return None
+
+        # Quanto mais baixa a vel mín e mais alto o brake_max, maior a confiança
+        speed_deficit = (OVER_BRAKING_SPEED_MAX - speed_min) / OVER_BRAKING_SPEED_MAX
+        confidence = min(1.0, (brake_max * 0.5) + (speed_deficit * 0.5))
+
+        return PatternMatch(
+            cause="Frenagem excessiva — velocidade mínima abaixo do ideal",
+            confidence=round(confidence, 3),
+            evidence={
+                "brake_max": brake_max,
+                "speed_min": speed_min,
+                "abs_active": abs_active,
             },
         )

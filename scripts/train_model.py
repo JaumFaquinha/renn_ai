@@ -24,7 +24,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.settings import LAPS_DIR, MODELS_DIR, LOG_LEVEL, SUPABASE_ENABLED
-from src.models.sector_model import SectorModel, _DELTA_OUTLIER_THRESHOLD_S
+from src.models.sector_model import (
+    SectorModel,
+    _DELTA_OUTLIER_THRESHOLD_S,
+    _TRACK_POSITION_MIN,
+    _TRACK_POSITION_MAX,
+)
 
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
@@ -137,7 +142,7 @@ def load_laps_from_json(
 def load_laps_from_supabase(
     track_id: str,
     car_model: str | None = None,
-    limit: int = 100,
+    limit: int | None = None,
 ) -> list[dict]:
     """
     Carrega voltas do Supabase (se habilitado).
@@ -148,7 +153,10 @@ def load_laps_from_supabase(
     Args:
         track_id: identificador da pista
         car_model: filtro opcional de carro
-        limit: máximo de voltas a carregar
+        limit: máximo de voltas a carregar. ``None`` (default) carrega TODAS
+            as voltas válidas via paginação — o antigo default fixo de 100
+            silenciava centenas de voltas existentes no banco (ver
+            query_helpers.py para o porquê do teto de 1000 do servidor).
 
     Returns:
         Lista de dicts de volta.
@@ -158,44 +166,55 @@ def load_laps_from_supabase(
 
     try:
         from src.persistence.supabase_client import SupabaseClient
+        from src.persistence.query_helpers import fetch_all, fetch_all_in
         client = SupabaseClient()
         if not client.is_enabled:
             return []
 
         sb = client.get_client()
 
-        # Busca sessões da pista
-        sessions_q = (
-            sb.table("sessions")
-            .select("id")
-            .eq("track_id", track_id)
-        )
-        if car_model:
-            sessions_q = sessions_q.eq("car_model", car_model)
-        sessions_result = sessions_q.execute()
+        # Busca sessões da pista (paginado — defende contra >1000 sessões)
+        def sessions_query():
+            q = (
+                sb.table("sessions")
+                .select("id")
+                .eq("track_id", track_id)
+                .order("id")
+            )
+            if car_model:
+                q = q.eq("car_model", car_model)
+            return q
 
-        if not sessions_result or not sessions_result.data:
+        sessions_data = fetch_all(sessions_query)
+
+        if not sessions_data:
             return []
 
-        session_ids = [s["id"] for s in sessions_result.data]
+        session_ids = [s["id"] for s in sessions_data]
 
-        # Busca voltas válidas dessas sessões
-        laps_result = (
-            sb.table("laps")
-            .select("id, lap_number, lap_time_ms, tyre_compound")
-            .in_("session_id", session_ids)
-            .eq("is_valid", True)
-            .order("lap_time_ms")
-            .limit(limit)
-            .execute()
-        )
+        # Busca voltas válidas dessas sessões.
+        # Sem limit → pagina todas; com limit → respeita o teto pedido.
+        def laps_query(ids):
+            return (
+                sb.table("laps")
+                .select("id, lap_number, lap_time_ms, tyre_compound")
+                .in_("session_id", ids)
+                .eq("is_valid", True)
+                .order("lap_time_ms")
+            )
 
-        if not laps_result or not laps_result.data:
+        laps_data = fetch_all_in(laps_query, session_ids)
+        # Mantém a volta mais rápida primeiro (paginação reordena por bloco)
+        laps_data.sort(key=lambda r: r.get("lap_time_ms") or 0)
+        if limit is not None:
+            laps_data = laps_data[:limit]
+
+        if not laps_data:
             return []
 
         # Para cada volta, busca os mini-setores
         laps: list[dict] = []
-        for lap_row in laps_result.data:
+        for lap_row in laps_data:
             sectors_result = (
                 sb.table("mini_sectors")
                 # SELECT * para resiliência ao schema:
@@ -281,6 +300,17 @@ def evaluate_model(model: SectorModel, lap_data: list[dict]) -> dict:
         prev_dvb: float | None = None
 
         for sector in lap_sectors:
+            # Filtro posicional (2026-06-15) — mesmo do SectorModel.train(),
+            # mantém in-sample/CV consistente com a amostra de treino.
+            pos = sector.get("track_position")
+            if pos is not None:
+                try:
+                    pos_f = float(pos)
+                    if pos_f < _TRACK_POSITION_MIN or pos_f > _TRACK_POSITION_MAX:
+                        continue
+                except (TypeError, ValueError):
+                    pass
+
             # Usa `is not None` em vez de `in sector`: dados do Supabase carregam
             # todas as colunas selecionadas mesmo com valor NULL no banco
             # (mini-setores gravados antes da migração que introduziu
@@ -334,8 +364,10 @@ def evaluate_model(model: SectorModel, lap_data: list[dict]) -> dict:
         [model._row_for_sector(s, c) for s, c in zip(all_sectors, all_cars)],
         dtype=float,
     )
-    X_scaled = model._scaler.transform(X_eval)
-    predicted_deltas = model._model.predict(X_scaled)
+    # _scaler é None para modelos novos (HistGBR, tree-based, escala-livre).
+    if model._scaler is not None:
+        X_eval = model._scaler.transform(X_eval)
+    predicted_deltas = model._model.predict(X_eval)
 
     # scores_arr ainda é necessário para precision@10% (anomaly-score ranking)
     scores_arr = np.clip(predicted_deltas / max(model._max_delta, 1e-9), 0.0, 1.0)

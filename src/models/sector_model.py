@@ -92,15 +92,34 @@ _CLUTCH_MAX_VALUE: float = 1.0
 
 # Limiar de outlier para o TARGET.
 #
-# Com delta_vs_best (cumulativo): era 60.0 s — primeira volta sem referência
-# podia chegar a centenas de segundos.
+# Histórico:
+#   60.0s (delta_vs_best cumulativo) → 5.0s (delta_per_sector) → 1.0s (atual)
 #
-# Com delta_per_sector (por mini-setor): 5.0 s é conservador. Um mini-setor
-# cobre ~1% da pista (≈1.1 s em Monza). Perder 5 s num único mini-setor
-# implica velocidade zero ou crash — claramente um artefato de dados (ex:
-# reset de performanceMeter ao cruzar a linha de chegada com sessão anterior,
-# ou primeira volta sem referência de best lap).
-_DELTA_OUTLIER_THRESHOLD_S: float = 5.0
+# 2026-06-15 (validação pós-v8): análise empírica da distribuição real do
+# target em 81 491 mini-setores Monza:
+#   p50  = 0.003s (3ms)
+#   p95  = 0.018s (18ms)
+#   p99  = 0.285s
+#   p99.9 ≈ 0.7s
+# Com threshold 5s, artefatos sistemáticos (-1.80s repetido em pos=0.055 por
+# múltiplas voltas, -3.27s em pos=0.005) passavam pelo filtro e dominavam
+# MAE/R² nos top-erros — caracteristicamente resets de performanceMeter no
+# início da volta ou referência ainda em transição entre sessões.
+# 1.0s = 3.5× p99 — preserva todos os deltas realistas (perda de tempo num
+# único mini-setor de ~1% da pista raramente ultrapassa 0.5s mesmo em erros
+# graves) e elimina artefatos.
+_DELTA_OUTLIER_THRESHOLD_S: float = 1.0
+
+# 2026-06-15: filtro posicional de mini-setores.
+# Os primeiros e últimos ~2% da spline concentram artefatos de transição:
+# - pos < ~0.02: primeira volta sem `iBestTime` válido, ou reset de
+#   performanceMeter no cruzamento da linha → delta_per_sector pode saltar
+#   bruscamente (observados artefatos consistentes de -1.8s a -3.3s).
+# - pos > ~0.98: última fração da volta com cálculo de finish overlap;
+#   menos crítico empiricamente mas simétrico por precaução.
+# Mantém os ~96% centrais da pista, onde o sinal é confiável.
+_TRACK_POSITION_MIN: float = 0.02
+_TRACK_POSITION_MAX: float = 0.98
 
 
 class SectorModel:
@@ -191,8 +210,12 @@ class SectorModel:
         Monta a linha de features para um mini-setor:
         [_FEATURE_FIELDS values...] + [one-hot car_model...]
 
-        Carro desconhecido → todas as colunas one-hot ficam 0.0 (fallback
-        para média entre carros, sem quebrar a predição).
+        Valores None viram 0.0 (GBR clássico não tem suporte nativo a NaN).
+        Tradeoff conhecido: colunas multi-stat NULL pré-migration P1 viram
+        zero, criando ambiguidade entre "valor zero real" e "ausente".
+        Mitigado pelo filtro de outlier + posicional aplicado a montante.
+
+        Carro desconhecido → todas as colunas one-hot ficam 0.0.
         """
         row = [float(sector.get(f) or 0.0) for f in _FEATURE_FIELDS]
         for cm in self._car_models:
@@ -224,6 +247,15 @@ class SectorModel:
             True se o treino foi concluído com sucesso, False caso contrário.
         """
         try:
+            # 2026-06-16: revertido para GradientBoostingRegressor com Huber.
+            #
+            # Histórico: HistGBR + absolute_error foi testado (v10) mas, embora
+            # in-sample R² reportasse 0.40, a validação em dados externos
+            # mostrou Pearson=0.10 vs Pearson=0.19 do GBR/Huber. Causa: 50%
+            # dos targets são 0ms (p50=0); absolute_error converge para
+            # "prever zero" minimizando MAE médio — métrica boa, ranking ruim.
+            # Huber preserva curvatura na cauda (>p95) que é onde o engenheiro
+            # de corrida precisa de sinal.
             from sklearn.ensemble import GradientBoostingRegressor
             from sklearn.preprocessing import StandardScaler
             import numpy as np
@@ -307,6 +339,7 @@ class SectorModel:
 
         X_rows, y_values = [], []
         discarded_outliers: int = 0
+        discarded_position: int = 0
 
         for lap in clean_laps:
             lap_sectors = lap.get("mini_sectors", [])
@@ -314,6 +347,20 @@ class SectorModel:
             prev_dvb: Optional[float] = None  # delta_vs_best do setor anterior nesta volta
 
             for sector in lap_sectors:
+                # Filtro posicional (2026-06-15): descarta artefatos
+                # concentrados nos extremos da spline.
+                pos = sector.get("track_position")
+                if pos is not None:
+                    try:
+                        pos_f = float(pos)
+                        if pos_f < _TRACK_POSITION_MIN or pos_f > _TRACK_POSITION_MAX:
+                            discarded_position += 1
+                            # Não atualiza prev_dvb para não distorcer o cálculo
+                            # do próximo setor válido; o gap será absorvido na
+                            # ordem de leitura (track_position já está ordenada).
+                            continue
+                    except (TypeError, ValueError):
+                        pass
                 # --- Determinar o target ---
                 # Importante: usar `is not None` em vez de `in sector`. Dados vindos
                 # do Supabase sempre carregam todas as colunas selecionadas, mesmo
@@ -375,6 +422,15 @@ class SectorModel:
                 extra={"track_id": self._track_id},
             )
 
+        if discarded_position > 0:
+            logger.info(
+                "Filtragem posicional: %d setor(es) descartado(s) (pos < %.2f ou > %.2f)",
+                discarded_position,
+                _TRACK_POSITION_MIN,
+                _TRACK_POSITION_MAX,
+                extra={"track_id": self._track_id},
+            )
+
         if len(X_rows) < _MIN_SECTORS_TO_TRAIN:
             logger.warning(
                 "Setores com target válido insuficientes após filtragem",
@@ -390,20 +446,24 @@ class SectorModel:
         X = np.array(X_rows, dtype=float)
         y = np.array(y_values, dtype=float)
 
-        # Normalizar features (importante: track_position tem escala 0–1,
-        # mas rpms pode ser 8000+ — StandardScaler equaliza as distribuições)
+        # StandardScaler para o GBR clássico — equaliza escalas
+        # (track_position 0–1 vs rpms 8000+).
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
 
-        # GradientBoosting: captura relações não-lineares entre posição,
-        # inputs e delta. Subsample=0.8 reduz overfitting com poucas voltas.
-        #
-        # loss='huber' (Proposal P2, 2026-04-25): mais robusto a outliers
-        # residuais que passam pelo filtro de 5s. Squared loss penaliza
-        # quadraticamente erros grandes — em telemetria de sim-racing,
-        # picos isolados (saída de pista, contato) deslocam a otimização.
-        # Huber é linear acima de delta=alpha, quadrática abaixo. alpha=0.9
-        # significa: usa quantile 0.9 dos resíduos como ponto de transição.
+        # sample_weight (2026-06-16): contrapeso à massa de targets ~0ms.
+        # 50% dos targets têm |y| ≈ 3ms (mediana). Sem peso, o GBR converge
+        # para "prever zero" — minimiza MAE médio, mas perde sinal na cauda
+        # (>50ms), que é exatamente onde o engenheiro de corrida precisa
+        # detectar perdas. Peso = 1 + |y|/escala_ref onde escala_ref é o
+        # p75 do |y| positivo (calibração robusta à distribuição da pista).
+        # Setores 0ms recebem peso 1; setores 100ms recebem peso ~4×.
+        abs_y = np.abs(y)
+        positive = abs_y[abs_y > 0]
+        scale_ref = float(np.percentile(positive, 75)) if len(positive) > 0 else 0.05
+        scale_ref = max(scale_ref, 0.01)  # mínimo 10ms para evitar div/0
+        sample_weight = 1.0 + abs_y / scale_ref
+
         model = GradientBoostingRegressor(
             n_estimators=100,
             max_depth=4,
@@ -414,7 +474,7 @@ class SectorModel:
             loss="huber",
             alpha=0.9,
         )
-        model.fit(X_scaled, y)
+        model.fit(X_scaled, y, sample_weight=sample_weight)
 
         self._model = model
         self._scaler = scaler
@@ -469,21 +529,45 @@ class SectorModel:
             Score de anomalia 0.0–1.0:
             - 0.0 → setor dentro do padrão aprendido
             - 1.0 → perda máxima prevista (calibrada no p95 do treino)
-            Retorna 0.0 se o modelo não estiver treinado (fail-safe silencioso).
+            Retorna 0.0 se o modelo não estiver treinado (fail-safe silencioso)
+            ou se o setor estiver fora do domínio posicional de treino
+            (track_position ∉ [_TRACK_POSITION_MIN, _TRACK_POSITION_MAX]).
         """
         if not self._is_trained:
+            return 0.0
+
+        # Guard de domínio (2026-06-16): o treino descarta extremos da spline
+        # (§_TRACK_POSITION_MIN/MAX). Predizer ali é extrapolação livre — o
+        # GBR clipa em 1.0 e produz "100% anomalia" em setores onde o
+        # performanceMeter ainda está em transição entre voltas.
+        if not self._is_position_in_domain(sector):
             return 0.0
 
         try:
             import numpy as np
             features = np.array([self._row_for_sector(sector, car_model)], dtype=float)
-            features_scaled = self._scaler.transform(features)
-            predicted_delta = float(self._model.predict(features_scaled)[0])
+            # _scaler é None para modelos novos (HistGBR) e populado para
+            # modelos legados (GBR + StandardScaler). Compatibilidade total.
+            if self._scaler is not None:
+                features = self._scaler.transform(features)
+            predicted_delta = float(self._model.predict(features)[0])
             score = max(0.0, min(1.0, predicted_delta / self._max_delta))
             return round(score, 4)
         except Exception as exc:
             logger.debug("Falha na predição do SectorModel", extra={"error": str(exc)})
             return 0.0
+
+    @staticmethod
+    def _is_position_in_domain(sector: dict) -> bool:
+        """True se track_position está na faixa usada pelo treino."""
+        pos = sector.get("track_position")
+        if pos is None:
+            return True  # Sem posição: deixa a predição prosseguir (fail-open)
+        try:
+            pos_f = float(pos)
+        except (TypeError, ValueError):
+            return True
+        return _TRACK_POSITION_MIN <= pos_f <= _TRACK_POSITION_MAX
 
     def predict_batch(
         self,
@@ -509,16 +593,26 @@ class SectorModel:
 
         try:
             import numpy as np
+            # Guard de domínio (2026-06-16): zera scores de setores fora do
+            # range posicional de treino sem chamar o modelo. Mantém o lote
+            # alinhado com a entrada (índices preservados).
+            in_domain = [self._is_position_in_domain(s) for s in sectors]
+            scores = [0.0] * len(sectors)
+
+            valid_idx = [i for i, ok in enumerate(in_domain) if ok]
+            if not valid_idx:
+                return scores
+
             X = np.array(
-                [self._row_for_sector(s, car_model) for s in sectors],
+                [self._row_for_sector(sectors[i], car_model) for i in valid_idx],
                 dtype=float,
             )
-            X_scaled = self._scaler.transform(X)
-            predictions = self._model.predict(X_scaled)
-            return [
-                round(max(0.0, min(1.0, float(p) / self._max_delta)), 4)
-                for p in predictions
-            ]
+            if self._scaler is not None:
+                X = self._scaler.transform(X)
+            predictions = self._model.predict(X)
+            for i, p in zip(valid_idx, predictions):
+                scores[i] = round(max(0.0, min(1.0, float(p) / self._max_delta)), 4)
+            return scores
         except Exception as exc:
             logger.debug(
                 "Falha na predição em lote do SectorModel",

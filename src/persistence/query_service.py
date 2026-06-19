@@ -14,6 +14,7 @@ import logging
 from typing import Optional
 
 from config.settings import SUPABASE_USER_ID
+from src.persistence.query_helpers import fetch_all_in
 from src.persistence.supabase_client import SupabaseClient
 
 logger = logging.getLogger(__name__)
@@ -169,39 +170,45 @@ class QueryService:
             pos_min = track_position - tolerance
             pos_max = track_position + tolerance
 
-            # Busca mini-setores na faixa de posição para as sessões encontradas
-            sectors_result = (
-                self._client.get_client()
-                .table("mini_sectors")
-                .select("lap_id, delta_vs_best, speed_min")
-                .gte("track_position", pos_min)
-                .lte("track_position", pos_max)
-                .execute()
+            # Busca os laps dessas sessões primeiro (define o universo de lap_ids).
+            # Antes a query de mini_sectors varria a tabela inteira sem filtro de
+            # lap e truncava em 1000 linhas (db-max-rows) — perdia sessões e
+            # misturava dados de outros pilotos.
+            sb = self._client.get_client()
+            laps_data = fetch_all_in(
+                lambda ids: (
+                    sb.table("laps").select("id, session_id")
+                    .in_("session_id", ids).order("id")
+                ),
+                session_ids,
             )
 
-            if not sectors_result or not sectors_result.data:
+            if not laps_data:
                 return []
 
-            # Agrupa por sessão via join manual (evita RPC)
-            # Busca lap → session_id para os laps encontrados
-            lap_ids = list({s["lap_id"] for s in sectors_result.data})
-            laps_result = (
-                self._client.get_client()
-                .table("laps")
-                .select("id, session_id")
-                .in_("id", lap_ids)
-                .in_("session_id", session_ids)
-                .execute()
+            lap_to_session = {l["id"]: l["session_id"] for l in laps_data}
+            lap_ids = list(lap_to_session.keys())
+
+            # Mini-setores na faixa de posição, restritos aos laps das sessões.
+            # Chunked + paginado: 100 lap_ids podem render ~10k setores.
+            sectors_data = fetch_all_in(
+                lambda ids: (
+                    sb.table("mini_sectors")
+                    .select("lap_id, delta_vs_best, speed_min")
+                    .in_("lap_id", ids)
+                    .gte("track_position", pos_min)
+                    .lte("track_position", pos_max)
+                    .order("id")
+                ),
+                lap_ids,
             )
 
-            if not laps_result or not laps_result.data:
+            if not sectors_data:
                 return []
-
-            lap_to_session = {l["id"]: l["session_id"] for l in laps_result.data}
 
             # Agrega delta e speed_min por sessão
             session_data: dict[str, list] = {}
-            for sector in sectors_result.data:
+            for sector in sectors_data:
                 sid = lap_to_session.get(sector["lap_id"])
                 if sid and sector.get("delta_vs_best") is not None:
                     session_data.setdefault(sid, []).append(sector)
@@ -329,36 +336,38 @@ class QueryService:
                 return []
 
             session_ids = [s["id"] for s in sessions_result.data]
+            sb = self._client.get_client()
 
-            # Busca laps dessas sessões
-            laps_result = (
-                self._client.get_client()
-                .table("laps")
-                .select("id")
-                .in_("session_id", session_ids)
-                .execute()
+            # Busca laps dessas sessões (chunked + paginado)
+            laps_data = fetch_all_in(
+                lambda ids: sb.table("laps").select("id").in_("session_id", ids).order("id"),
+                session_ids,
             )
 
-            if not laps_result or not laps_result.data:
+            if not laps_data:
                 return []
 
-            lap_ids = [l["id"] for l in laps_result.data]
+            lap_ids = [l["id"] for l in laps_data]
 
-            # Busca todos os padrões desses laps
-            patterns_result = (
-                self._client.get_client()
-                .table("lap_patterns")
-                .select("cause, corner_name, confidence")
-                .in_("lap_id", lap_ids)
-                .execute()
+            # Busca todos os padrões desses laps.
+            # lap_ids pode ter centenas de UUIDs → .in_() direto estoura a URL
+            # (HTTP 400). fetch_all_in fatia em blocos e pagina cada um.
+            patterns_data = fetch_all_in(
+                lambda ids: (
+                    sb.table("lap_patterns")
+                    .select("cause, corner_name, confidence")
+                    .in_("lap_id", ids)
+                    .order("id")
+                ),
+                lap_ids,
             )
 
-            if not patterns_result or not patterns_result.data:
+            if not patterns_data:
                 return []
 
             # Agrega por causa + curva
             freq: dict[tuple, dict] = {}
-            for p in patterns_result.data:
+            for p in patterns_data:
                 key = (p["cause"], p.get("corner_name") or "—")
                 if key not in freq:
                     freq[key] = {"cause": p["cause"], "corner_name": key[1], "count": 0}
@@ -425,43 +434,46 @@ class QueryService:
 
             session_ids = [s["id"] for s in sessions_result.data]
             session_dates = {s["id"]: s["started_at"] for s in sessions_result.data}
+            sb = self._client.get_client()
 
-            # Laps dessas sessões
-            laps_result = (
-                self._client.get_client()
-                .table("laps")
-                .select("id, session_id")
-                .in_("session_id", session_ids)
-                .execute()
+            # Laps dessas sessões (chunked + paginado)
+            laps_data = fetch_all_in(
+                lambda ids: sb.table("laps").select("id, session_id").in_("session_id", ids).order("id"),
+                session_ids,
             )
 
-            if not laps_result or not laps_result.data:
+            if not laps_data:
                 return {}
 
-            lap_ids = [l["id"] for l in laps_result.data]
-            lap_to_session = {l["id"]: l["session_id"] for l in laps_result.data}
+            lap_ids = [l["id"] for l in laps_data]
+            lap_to_session = {l["id"]: l["session_id"] for l in laps_data}
 
-            # Faixa global cobrindo todas as posições (1 única query)
+            # Faixa global cobrindo todas as posições.
+            # .in_(lap_ids) com centenas de UUIDs estourava a URL (HTTP 400) e o
+            # resultado podia passar de 1000 linhas (db-max-rows) — fetch_all_in
+            # fatia e pagina.
             pos_min = min(positions) - tolerance
             pos_max = max(positions) + tolerance
 
-            sectors_result = (
-                self._client.get_client()
-                .table("mini_sectors")
-                .select("lap_id, track_position, delta_vs_best, speed_min")
-                .in_("lap_id", lap_ids)
-                .gte("track_position", pos_min)
-                .lte("track_position", pos_max)
-                .execute()
+            sectors_data = fetch_all_in(
+                lambda ids: (
+                    sb.table("mini_sectors")
+                    .select("lap_id, track_position, delta_vs_best, speed_min")
+                    .in_("lap_id", ids)
+                    .gte("track_position", pos_min)
+                    .lte("track_position", pos_max)
+                    .order("id")
+                ),
+                lap_ids,
             )
 
-            if not sectors_result or not sectors_result.data:
+            if not sectors_data:
                 return {}
 
             # Agrupa por posição alvo → sessão → lista de deltas
             pos_session_data: dict[float, dict[str, list]] = {p: {} for p in positions}
 
-            for sector in sectors_result.data:
+            for sector in sectors_data:
                 # Encontra qual posição alvo este setor pertence
                 sp = sector["track_position"]
                 target = next(

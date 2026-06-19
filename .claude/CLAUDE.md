@@ -193,7 +193,7 @@ Campos não gravados no schema de mini-setor mas usados para validar se a volta/
 |---|---|---|
 | `status` | SPageFileGraphic | Descartar se ≠ `AC_LIVE (2)` |
 | `flag` | SPageFileGraphic | Descartar setores com `AC_YELLOW_FLAG` ou superior |
-| `numberOfTyresOut` | SPageFilePhysics | Descartar setor se > 0 |
+| `numberOfTyresOut` | SPageFilePhysics | Descartar volta se > 2 (3+ pneus fora); configurável via `MAX_TYRES_OUT_ALLOWED`. 2 pneus na zebra/grama é tolerado. |
 | `pitLimiterOn` | SPageFilePhysics | Descartar setor se = 1 |
 | `isInPit` | SPageFileGraphic | Descartar volta se = 1 em qualquer ponto |
 | `isInPitLane` | SPageFileGraphic | Descartar volta se = 1 |
@@ -445,19 +445,24 @@ Tabela de correlação usada pelo `PatternDetector`:
 
 ---
 
-### FASE 6 — Integração TTS (Voz do Engenheiro)
-**Objetivo:** Transformar o relatório em feedback de voz via ElevenLabs ou Azure TTS.
+### FASE 6 — Integração TTS (Voz do Engenheiro) — ✅ IMPLEMENTADA
+**Objetivo:** Transformar o relatório em feedback de voz via TTS configurável.
+
+**Status:** Implementada em `src/output/tts_integration.py` com 4 providers
+(`pyttsx3`, `edge_tts`, `elevenlabs`, `azure`) + modo `none` (texto), fila
+assíncrona em thread separada e fallback automático para `pyttsx3`. ElevenLabs
+usa `eleven_flash_v2_5` (modelo de baixa latência, suporte a pt-BR).
 
 **Entregáveis:**
 - `src/output/tts_integration.py`
-- Suporte a ambos os providers com fallback configurável
+- Suporte a múltiplos providers com fallback configurável
 
 **Critérios de aceite:**
-- [ ] Provider configurável via `.env` sem alteração de código
-- [ ] Síntese de voz em < 3 segundos após fim da volta
-- [ ] Fila de mensagens para não bloquear o loop principal
-- [ ] Funciona offline com Azure TTS local (opcional)
-- [ ] Placeholder funcional sem API key (modo texto apenas)
+- [x] Provider configurável via `.env` sem alteração de código (`TTS_PROVIDER`)
+- [x] Síntese de voz em < 3 segundos após fim da volta (Flash v2.5 ~200–500ms)
+- [x] Fila de mensagens para não bloquear o loop principal (`queue.Queue` + worker)
+- [x] Fallback **offline** via `pyttsx3` (Windows SAPI5); ElevenLabs e Azure Speech são cloud-only
+- [x] Modo texto funcional sem API key (`TTS_PROVIDER=none`)
 
 ---
 

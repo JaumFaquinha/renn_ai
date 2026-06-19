@@ -17,7 +17,8 @@ def base_sector(**overrides) -> dict:
     """Mini-setor base com valores neutros (sem padrão detectável)."""
     sector = {
         "track_position": 0.5,
-        "delta_vs_best": 0.3,  # Perda suficiente para análise
+        "delta_vs_best": 0.3,         # Perda suficiente para análise (fallback)
+        "delta_per_sector": 0.3,      # Mesmo valor; filtro novo prefere este
         "throttle": 1.0,
         "brake": 0.0,
         "steering": 0.05,
@@ -44,6 +45,16 @@ def base_sector(**overrides) -> dict:
         "surface_grip": 0.97,
         "air_temp": 24.0,
         "road_temp": 31.0,
+        # Multi-stat (Proposal P1) — defaults neutros que não disparam padrões 6–11
+        "throttle_max": 1.0, "throttle_min": 1.0, "throttle_std": 0.0,
+        "brake_max": 0.0,    "brake_min": 0.0,    "brake_std": 0.0,
+        "steering_max": 0.05, "steering_min": 0.05, "steering_std": 0.0,
+        "wheel_slip_fl_max": 0.03, "wheel_slip_fl_min": 0.03, "wheel_slip_fl_std": 0.0,
+        "wheel_slip_fr_max": 0.03, "wheel_slip_fr_min": 0.03, "wheel_slip_fr_std": 0.0,
+        "wheel_slip_rl_max": 0.04, "wheel_slip_rl_min": 0.04, "wheel_slip_rl_std": 0.0,
+        "wheel_slip_rr_max": 0.04, "wheel_slip_rr_min": 0.04, "wheel_slip_rr_std": 0.0,
+        "tc_active_max": 0.0, "tc_active_min": 0.0, "tc_active_std": 0.0,
+        "abs_active_max": 0.0, "abs_active_min": 0.0, "abs_active_std": 0.0,
     }
     sector.update(overrides)
     return sector
@@ -196,17 +207,27 @@ class TestPatternDetector:
 
     def test_no_compromised_exit_with_high_steering(self):
         # Curvando — não é uma reta
-        sector = base_sector(throttle=0.5, steering=0.5, speed_kmh=200.0)
+        sector = base_sector(throttle=0.5, steering=0.5, steering_max=0.6, speed_kmh=200.0)
         matches = self.detector.detect(sector)
         exit_matches = [m for m in matches if "saída" in m.cause.lower()]
         assert len(exit_matches) == 0
+
+    def test_no_compromised_exit_when_apex_inside_sector(self):
+        """Regressão Lesmo: steering médio baixo mas pico alto não é reta."""
+        sector = base_sector(
+            throttle=0.6, steering=0.15, steering_max=0.65, speed_kmh=200.0,
+        )
+        matches = self.detector.detect(sector)
+        assert not any("saída" in m.cause.lower() for m in matches)
 
     # --- Testes gerais ---
 
     def test_no_detection_below_delta_threshold(self):
         """Não deve detectar padrões se a perda for insignificante."""
         sector = late_braking_sector()
-        sector["delta_vs_best"] = 0.01  # Abaixo do threshold
+        # Filtro prioriza delta_per_sector; precisa zerar ambos para garantir
+        sector["delta_per_sector"] = 0.01
+        sector["delta_vs_best"] = 0.01
         matches = self.detector.detect(sector)
         assert len(matches) == 0
 
@@ -228,3 +249,183 @@ class TestPatternDetector:
         for match in matches:
             assert isinstance(match.evidence, dict)
             assert len(match.evidence) > 0
+
+
+# ---------------------------------------------------------------------------
+# Testes dos detectores adicionais (2026-06-16, padrões 6–11)
+# ---------------------------------------------------------------------------
+
+
+class TestExtendedPatterns:
+    def setup_method(self):
+        self.detector = PatternDetector(max_rpm=8000)
+
+    # --- Padrão 6: Trail-braking excessivo ---
+
+    def test_detects_trail_braking(self):
+        sector = base_sector(
+            brake_max=0.6, brake_min=0.20, brake=0.35,
+            steering_max=0.55, steering=0.40,
+        )
+        matches = self.detector.detect(sector)
+        causes = [m.cause for m in matches]
+        assert any("trail" in c.lower() for c in causes), causes
+
+    def test_no_trail_braking_without_steering(self):
+        sector = base_sector(brake_max=0.8, brake_min=0.25, steering_max=0.1)
+        matches = self.detector.detect(sector)
+        assert not any("trail" in m.cause.lower() for m in matches)
+
+    def test_no_trail_braking_with_zero_brake_min(self):
+        # Frenagem só na entrada, libera antes da curva — comportamento ok
+        sector = base_sector(brake_max=0.9, brake_min=0.0, steering_max=0.6)
+        matches = self.detector.detect(sector)
+        assert not any("trail" in m.cause.lower() for m in matches)
+
+    # --- Padrão 7: Coasting no apex ---
+
+    def test_detects_coasting(self):
+        sector = base_sector(
+            throttle=0.10, brake=0.05,
+            steering_max=0.50, speed_min=110.0,
+        )
+        matches = self.detector.detect(sector)
+        assert any("coasting" in m.cause.lower() for m in matches), [m.cause for m in matches]
+
+    def test_no_coasting_with_throttle_applied(self):
+        sector = base_sector(throttle=0.50, brake=0.0, steering_max=0.5, speed_min=110)
+        matches = self.detector.detect(sector)
+        assert not any("coasting" in m.cause.lower() for m in matches)
+
+    def test_no_coasting_on_straight(self):
+        sector = base_sector(throttle=0.0, brake=0.0, steering_max=0.05, speed_min=200)
+        matches = self.detector.detect(sector)
+        assert not any("coasting" in m.cause.lower() for m in matches)
+
+    # --- Padrão 8: Understeer ---
+
+    def test_detects_understeer(self):
+        sector = base_sector(
+            steering_max=0.65,
+            wheel_slip_fl_max=0.22, wheel_slip_fr_max=0.20,
+            tc_active=0.0,
+        )
+        matches = self.detector.detect(sector)
+        assert any("understeer" in m.cause.lower() for m in matches), [m.cause for m in matches]
+
+    def test_no_understeer_when_tc_active(self):
+        # TC ativo → aceleração agressiva, não understeer
+        sector = base_sector(
+            steering_max=0.65,
+            wheel_slip_fl_max=0.25,
+            tc_active=0.30,
+        )
+        matches = self.detector.detect(sector)
+        assert not any("understeer" in m.cause.lower() for m in matches)
+
+    def test_no_understeer_with_low_front_slip(self):
+        sector = base_sector(steering_max=0.7, wheel_slip_fl_max=0.05, wheel_slip_fr_max=0.05)
+        matches = self.detector.detect(sector)
+        assert not any("understeer" in m.cause.lower() for m in matches)
+
+    # --- Padrão 9: Oversteer ---
+
+    def test_detects_oversteer(self):
+        sector = base_sector(
+            steering_std=0.20,
+            wheel_slip_rl_max=0.30, wheel_slip_rr_max=0.25,
+            local_ang_vel_z=0.45,
+        )
+        matches = self.detector.detect(sector)
+        assert any("oversteer" in m.cause.lower() for m in matches), [m.cause for m in matches]
+
+    def test_no_oversteer_with_stable_steering(self):
+        sector = base_sector(
+            steering_std=0.02,  # Sem correções
+            wheel_slip_rl_max=0.30,
+            local_ang_vel_z=0.45,
+        )
+        matches = self.detector.detect(sector)
+        assert not any("oversteer" in m.cause.lower() for m in matches)
+
+    # --- Padrão 10: Hesitação no throttle ---
+
+    def test_detects_throttle_hesitation(self):
+        sector = base_sector(
+            throttle_std=0.25, throttle=0.7,
+            steering=0.05, steering_max=0.08, speed_kmh=180.0,
+        )
+        matches = self.detector.detect(sector)
+        assert any("hesita" in m.cause.lower() for m in matches), [m.cause for m in matches]
+
+    def test_no_throttle_hesitation_in_corner(self):
+        sector = base_sector(throttle_std=0.30, steering=0.5, steering_max=0.6, speed_kmh=180)
+        matches = self.detector.detect(sector)
+        assert not any("hesita" in m.cause.lower() for m in matches)
+
+    def test_no_throttle_hesitation_at_low_speed(self):
+        sector = base_sector(throttle_std=0.30, steering=0.05, steering_max=0.08, speed_kmh=70)
+        matches = self.detector.detect(sector)
+        assert not any("hesita" in m.cause.lower() for m in matches)
+
+    def test_no_throttle_hesitation_when_apex_inside_sector(self):
+        """
+        Regressão do log Monza V11 (2026-06-16): mini-setor que cobre o
+        apex da Lesmo tem steering MÉDIO baixo (~0.15) porque vai de
+        ~0 → max → ~0, mas steering_max alto (>0.6). O detector usava
+        a média e disparava falso positivo. Deve filtrar pelo max.
+        """
+        sector = base_sector(
+            throttle_std=0.25, throttle=0.6,
+            steering=0.15,       # média baixa, parece reta
+            steering_max=0.65,   # mas pico alto: é curva
+            speed_kmh=180.0,
+        )
+        matches = self.detector.detect(sector)
+        assert not any("hesita" in m.cause.lower() for m in matches), (
+            f"Falso positivo de hesitação em curva (steering_max={0.65}): "
+            f"{[m.cause for m in matches]}"
+        )
+
+    # --- Padrão 11: Over-braking sem ABS ---
+
+    def test_detects_over_braking(self):
+        sector = base_sector(
+            brake_max=0.85, speed_min=55.0,
+            abs_active=0.0,
+        )
+        matches = self.detector.detect(sector)
+        assert any("excessiva" in m.cause.lower() for m in matches), [m.cause for m in matches]
+
+    def test_no_over_braking_when_abs_active(self):
+        # Caso com ABS → padrão 1 (frenagem tardia) toma conta
+        sector = base_sector(brake_max=0.9, speed_min=50, abs_active=0.30, brake=0.85)
+        matches = self.detector.detect(sector)
+        assert not any("excessiva" in m.cause.lower() for m in matches)
+
+    def test_no_over_braking_with_healthy_speed_min(self):
+        sector = base_sector(brake_max=0.85, speed_min=130, abs_active=0.0)
+        matches = self.detector.detect(sector)
+        assert not any("excessiva" in m.cause.lower() for m in matches)
+
+    # --- Filtro delta_per_sector ---
+
+    def test_filter_uses_delta_per_sector_when_available(self):
+        # delta_per_sector baixo → sem detecção, mesmo com delta_vs_best alto
+        sector = base_sector(
+            delta_vs_best=5.0,
+            delta_per_sector=0.01,
+            brake=0.95, abs_active=0.5,
+        )
+        matches = self.detector.detect(sector)
+        assert len(matches) == 0
+
+    def test_filter_falls_back_to_delta_vs_best(self):
+        # Sem delta_per_sector → cai pra delta_vs_best
+        sector = base_sector(
+            delta_vs_best=0.5,
+            brake=0.95, abs_active=0.5,
+        )
+        sector.pop("delta_per_sector", None)
+        matches = self.detector.detect(sector)
+        assert len(matches) >= 1

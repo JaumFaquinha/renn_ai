@@ -202,9 +202,16 @@ class TestLapRecorderValidation:
         snap["_is_in_pit_lane"] = 1
         assert LapRecorder._is_snapshot_invalid(snap) is True
 
-    def test_rejects_snapshot_with_tyres_out(self):
+    def test_accepts_snapshot_with_two_tyres_out(self):
+        # Até 2 pneus fora é tolerado (MAX_TYRES_OUT_ALLOWED=2) — zebra/grama.
         snap = make_snapshot(0.5)
         snap["_number_of_tyres_out"] = 2
+        assert LapRecorder._is_snapshot_invalid(snap) is False
+
+    def test_rejects_snapshot_with_three_tyres_out(self):
+        # 3+ pneus fora (mais de 2) invalida a volta.
+        snap = make_snapshot(0.5)
+        snap["_number_of_tyres_out"] = 3
         assert LapRecorder._is_snapshot_invalid(snap) is True
 
     def test_accepts_snapshot_ai_controlled(self):
@@ -226,6 +233,21 @@ class TestLapRecorderValidation:
     def test_accepts_valid_snapshot(self):
         snap = make_snapshot(0.5)
         assert LapRecorder._is_snapshot_invalid(snap) is False
+
+    def test_on_lap_invalidated_callback_fires_once(self):
+        # O callback de invalidação dispara exatamente uma vez por volta
+        # (não repete a 20Hz enquanto a condição inválida persiste).
+        calls: list[str] = []
+        recorder = LapRecorder(track_id="test", on_lap_invalidated=calls.append)
+        recorder.process_snapshot(make_snapshot(0.40))   # estabelece last_position
+        bad = make_snapshot(0.42)
+        bad["_number_of_tyres_out"] = 3
+        recorder.process_snapshot(bad)                    # invalida → 1 callback
+        bad2 = make_snapshot(0.44)
+        bad2["_number_of_tyres_out"] = 3
+        recorder.process_snapshot(bad2)                   # segue inválida → sem novo callback
+        assert len(calls) == 1
+        assert "tyres_out=3" in calls[0]
 
 
 # ---------------------------------------------------------------------------

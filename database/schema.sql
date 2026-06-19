@@ -289,3 +289,12 @@ ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS tc_active_std FLOAT;
 ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS abs_active_max FLOAT;
 ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS abs_active_min FLOAT;
 ALTER TABLE mini_sectors ADD COLUMN IF NOT EXISTS abs_active_std FLOAT;
+
+-- Migration: unicidade de volta por sessão (2026-06-17)
+-- Contexto: dois run_session.py concorrentes criaram sessões duplicadas com
+-- voltas sobrepostas. A trava de instância única em scripts/run_session.py
+-- previne a causa; este índice é a rede de segurança no banco contra uma mesma
+-- sessão registrar lap_number repetido (ex.: retry de upload pós-INSERT).
+-- Idempotente: CREATE UNIQUE INDEX IF NOT EXISTS é no-op se já existir.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_laps_session_lap_number
+    ON laps (session_id, lap_number);

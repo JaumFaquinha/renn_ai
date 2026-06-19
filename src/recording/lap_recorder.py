@@ -16,12 +16,13 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from config.settings import (
     CAR_DAMAGE_THRESHOLD,
     CLUTCH_MAX_VALUE,
     LAPS_DIR,
+    MAX_TYRES_OUT_ALLOWED,
     MINI_SECTOR_SIZE,
     MIN_SECTORS_PER_LAP,
 )
@@ -60,10 +61,15 @@ class LapRecorder:
         track_id: str = "unknown",
         car_model: str = "unknown",
         session_type: str = "practice",
+        on_lap_invalidated: Optional[Callable[[str], None]] = None,
     ) -> None:
         self._track_id = track_id
         self._car_model = car_model
         self._session_type = session_type
+        # Callback opcional invocado uma vez quando a volta em curso é
+        # invalidada (recebe a razão). Usado para sinal de TTS — sem acoplar
+        # o recorder à camada de saída.
+        self._on_lap_invalidated = on_lap_invalidated
         self._aggregator = SectorAggregator()
         self._current_lap: list[dict] = []
         self._sector_buffer: list[dict] = []
@@ -141,6 +147,16 @@ class LapRecorder:
                         "track_position": round(position, 4),
                     },
                 )
+                # Sinal único de invalidação (ex.: TTS). Protegido para que
+                # uma falha no callback nunca interrompa a gravação.
+                if self._on_lap_invalidated is not None:
+                    try:
+                        self._on_lap_invalidated(invalid_reason)
+                    except Exception as exc:
+                        logger.warning(
+                            "Callback on_lap_invalidated falhou",
+                            extra={"error": str(exc)},
+                        )
             self._lap_invalid = True
 
         # Agrupar snapshot no mini-setor correto
@@ -198,9 +214,10 @@ class LapRecorder:
             return "is_in_pit_lane"
         if snapshot.get("_pit_limiter_on") == 1:
             return "pit_limiter_on"
-        # Pneus fora da pista — carro em gravel/relva, setor inválido (CLAUDE.md §4.2)
+        # Pneus fora da pista — só invalida com MAIS de MAX_TYRES_OUT_ALLOWED
+        # pneus fora (padrão 2 → invalida a partir de 3). CLAUDE.md §4.2.
         tyres_out = snapshot.get("_number_of_tyres_out", 0)
-        if tyres_out > 0:
+        if tyres_out > MAX_TYRES_OUT_ALLOWED:
             return f"tyres_out={tyres_out}"
         damage = snapshot.get("_car_damage_max", 0.0)
         if damage > CAR_DAMAGE_THRESHOLD:
