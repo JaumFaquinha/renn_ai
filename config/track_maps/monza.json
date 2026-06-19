@@ -3,28 +3,28 @@
   "track_name": "Autodromo Nazionale Monza",
   "layout": "GP",
   "spline_length_m": 5793.0,
-  "source": "Calculado a partir de dados oficiais FIA/Kunos: comprimento 5793m, reta principal 1194m. Posições normalizadas baseadas em distâncias reais de cada zona de frenagem. Validar e ajustar com map_track.py --track monza --resume após sessão real no AC.",
+  "source": "Posições de curvas e limites de setor DERIVADOS EMPIRICAMENTE de 12 voltas reais gravadas no AC (data/laps/monza_*). Limites de setor extraídos das transições de `_current_sector_index` (σ < 0.001 entre voltas); ápices das curvas extraídos dos mínimos de velocidade (e do pico de G lateral na Curva Grande, que é plana). Velocidades/notas são referências qualitativas de pilotagem (variam por carro), não medidas exatas.",
   "sectors": [
     {
       "id": 0,
       "name": "Setor 1",
       "spline_start": 0.0,
-      "spline_end": 0.2693,
-      "description": "T/F → saída da Variante della Roggia. Reta principal + duas chicanes + Curva Grande."
+      "spline_end": 0.3607,
+      "description": "Reta principal → Variante del Rettifilo → Curva Grande → frenagem da Variante della Roggia. Limite oficial AC em 0.3607."
     },
     {
       "id": 1,
       "name": "Setor 2",
-      "spline_start": 0.2693,
-      "spline_end": 0.6715,
-      "description": "Lesmo 1 → Lesmo 2 → Serraglio → saída da Variante Ascari."
+      "spline_start": 0.3607,
+      "spline_end": 0.6705,
+      "description": "Variante della Roggia (ápice/saída) → Lesmo 1 → Lesmo 2 → reta do Serraglio → frenagem da Variante Ascari. Limite oficial AC em 0.6705."
     },
     {
       "id": 2,
       "name": "Setor 3",
-      "spline_start": 0.6715,
+      "spline_start": 0.6705,
       "spline_end": 1.0,
-      "description": "Parabolica completa + reta principal até T/F."
+      "description": "Variante Ascari → reta de retorno → Parabolica → reta principal até a linha de chegada."
     }
   ],
   "corners": [
@@ -32,8 +32,9 @@
       "name": "Variante del Rettifilo",
       "alt_name": "Prima Variante",
       "turns": "T1-T2",
-      "spline_position": 0.1139,
-      "spline_range": [0.0975, 0.1364],
+      "sector_id": 0,
+      "spline_position": 0.165,
+      "spline_range": [0.150, 0.190],
       "type": "chicane",
       "direction": "right-left",
       "braking_distance_m": 125,
@@ -43,23 +44,25 @@
     },
     {
       "name": "Curva Grande",
-      "alt_name": null,
+      "alt_name": "Curva Biassono",
       "turns": "T3",
-      "spline_position": 0.1571,
-      "spline_range": [0.1433, 0.1700],
-      "type": "fast_left",
-      "direction": "left",
+      "sector_id": 0,
+      "spline_position": 0.255,
+      "spline_range": [0.205, 0.305],
+      "type": "fast_right",
+      "direction": "right",
       "braking_distance_m": 0,
       "entry_speed_kmh": 290,
       "min_speed_kmh": 260,
-      "notes": "Curva de alta velocidade, praticamente plana na maioria dos GT3 e open-wheel. Exige commitamento total. Leve compressão na entrada. Erro clássico: levantar parcialmente o acelerador por falta de confiança — custa tempo na abordagem da Roggia."
+      "notes": "Curva de alta velocidade (pico de ~1.15g lateral confirmado na telemetria), praticamente plana na maioria dos GT3 e open-wheel. Exige comprometimento total. Leve compressão na entrada. Erro clássico: levantar parcialmente o acelerador por falta de confiança — custa tempo na abordagem da Roggia."
     },
     {
       "name": "Variante della Roggia",
       "alt_name": "Seconda Variante",
       "turns": "T4-T5",
-      "spline_position": 0.2313,
-      "spline_range": [0.2054, 0.2693],
+      "sector_id": 1,
+      "spline_position": 0.375,
+      "spline_range": [0.350, 0.405],
       "type": "chicane",
       "direction": "right-left",
       "braking_distance_m": 90,
@@ -71,8 +74,9 @@
       "name": "Curva di Lesmo 1",
       "alt_name": "Lesmo 1",
       "turns": "T6",
-      "spline_position": 0.3573,
-      "spline_range": [0.3349, 0.3884],
+      "sector_id": 1,
+      "spline_position": 0.445,
+      "spline_range": [0.420, 0.470],
       "type": "medium_right",
       "direction": "right",
       "braking_distance_m": 65,
@@ -84,21 +88,23 @@
       "name": "Curva di Lesmo 2",
       "alt_name": "Lesmo 2",
       "turns": "T7",
-      "spline_position": 0.4281,
-      "spline_range": [0.4005, 0.4557],
+      "sector_id": 1,
+      "spline_position": 0.495,
+      "spline_range": [0.475, 0.530],
       "type": "medium_right",
       "direction": "right",
       "braking_distance_m": 40,
       "entry_speed_kmh": 240,
       "min_speed_kmh": 150,
-      "notes": "Curva direita encadeada ao Lesmo 1. Saída absolutamente crítica: máxima velocidade aqui define a velocidade no fim da reta do Serraglio (450m). Throttle completo imediatamente após apex. Erro clássico: saída comprometida por excesso de ângulo de volante — motor subaproveitado na reta longa."
+      "notes": "Curva direita encadeada ao Lesmo 1. Saída absolutamente crítica: máxima velocidade aqui define a velocidade no fim da reta do Serraglio. Throttle completo imediatamente após apex. Erro clássico: saída comprometida por excesso de ângulo de volante — motor subaproveitado na reta longa."
     },
     {
       "name": "Variante Ascari",
       "alt_name": null,
       "turns": "T8-T9-T10",
-      "spline_position": 0.6301,
-      "spline_range": [0.5766, 0.6715],
+      "sector_id": 2,
+      "spline_position": 0.685,
+      "spline_range": [0.665, 0.730],
       "type": "chicane",
       "direction": "right-left-right",
       "braking_distance_m": 80,
@@ -110,14 +116,15 @@
       "name": "Parabolica",
       "alt_name": "Curva Alboreto",
       "turns": "T11",
-      "spline_position": 0.8579,
-      "spline_range": [0.7846, 0.9425],
+      "sector_id": 2,
+      "spline_position": 0.895,
+      "spline_range": [0.870, 0.945],
       "type": "slow_right",
       "direction": "right",
       "braking_distance_m": 100,
       "entry_speed_kmh": 295,
       "min_speed_kmh": 88,
-      "notes": "A curva mais importante do circuito para o tempo de volta. Raio decrescente — apex muito tardio, na segunda metade da curva. Throttle progressivo a partir do apex: velocidade de saída se propaga por toda a reta principal (1194m). Sacrificar a entrada para maximizar a saída. Erro clássico: apex precoce força undershooting na saída e throttle parcial na reta — custa até 0.3s/volta."
+      "notes": "A curva mais importante do circuito para o tempo de volta. Raio decrescente — apex muito tardio, na segunda metade da curva. Throttle progressivo a partir do apex: velocidade de saída se propaga por toda a reta principal. Sacrificar a entrada para maximizar a saída. Erro clássico: apex precoce força undershooting na saída e throttle parcial na reta — custa até 0.3s/volta."
     }
   ]
 }
