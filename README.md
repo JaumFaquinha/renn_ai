@@ -22,7 +22,7 @@ na saída de curva. O piloto amador de simuladores (*sim racing*) **não tem ess
 suporte** — ele vê apenas o cronômetro, que diz *quanto* perdeu, mas nunca *onde*
 nem *por quê*.
 
-Ferramentas de telemetria existentes (MoTeC, gráficos do próprio jogo) exigem que o
+Ferramentas de telemetria existentes (MoTeC, Moza, Fanatec) exigem que o
 piloto **pare, analise gráficos e interprete os dados sozinho** — uma barreira
 técnica alta e um processo lento que quebra o fluxo de treino.
 

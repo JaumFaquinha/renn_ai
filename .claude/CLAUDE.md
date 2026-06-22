@@ -1,4 +1,4 @@
-# CLAUDE.md — Engenheiro de Corrida IA
+# CLAUDE.md — Renn.ai
 
 > Contrato técnico do projeto para uso via Claude Code (Cowork).
 > Leia este arquivo integralmente antes de qualquer ação no repositório.
@@ -543,5 +543,4 @@ SPLINE_POSITION_FIELD: str = "normalizedCarPosition"
 
 ---
 
-*Última atualização: 2026-03-05*  
-*Próxima fase ativa: FASE 1 — Shared Memory Reader*
+*Última atualização: 2026-06-22*
