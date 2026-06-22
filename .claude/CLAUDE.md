@@ -1,4 +1,4 @@
-# CLAUDE.md — Engenheiro de Corrida IA
+# CLAUDE.md — Renn.ai
 
 > Contrato técnico do projeto para uso via Claude Code (Cowork).
 > Leia este arquivo integralmente antes de qualquer ação no repositório.
@@ -7,16 +7,19 @@
 
 ## 1. Identidade do Projeto
 
-**Nome:** Engenheiro de Corrida IA  
+**Nome:** Renn.ai  
 **Objetivo:** Desenvolver um analisador de telemetria em tempo real que atue como engenheiro de corrida limitado, identificando onde o piloto humano está perdendo tempo durante voltas no Assetto Corsa.  
 **Linguagem:** Python 3.10+  
 **Plataforma alvo:** Windows (obrigatório — Shared Memory do AC é exclusiva do Windows)  
 **Status atual:** Módulo B ativo — Analisador de telemetria do piloto humano.
 
-### O que este projeto NÃO é (por enquanto)
-- Não é um agente RL que pilota o carro autonomamente (Módulo A — backlog futuro)
+### O que este projeto NÃO é
+- **Não é um piloto autônomo** — o sistema nunca controla o carro. É um *assistente* que lê continuamente os dados do jogo e orienta o piloto humano.
 - Não usa modelos de linguagem (LLM) em nenhuma camada
 - Não é um sistema de setup de carro (suspensão, aerodinâmica, etc.)
+
+### Visão de evolução
+A expansão futura **não** é pilotagem autônoma, e sim novos **modelos especializados** — cada um responsável por uma dimensão da análise do engenheiro de corrida (ex.: desgaste de pneus, consumo de combustível, estratégia de pit) —, todos alimentados pela mesma leitura contínua da telemetria. O assistente permanece sempre lendo os dados do jogo; o que cresce é a quantidade de aspectos que ele sabe analisar.
 
 ---
 
@@ -27,10 +30,9 @@
 | Camada | Ferramenta | Justificativa |
 |---|---|---|
 | Leitura de dados | `mmap` (Python stdlib) | Acesso direto à Shared Memory do AC |
-| Ambiente RL (futuro Módulo A) | `Gymnasium` | Padrão da indústria para envs customizados |
-| Framework RL (futuro Módulo A) | `Stable-Baselines3` | Maduro, documentado, PPO/SAC prontos |
-| Monitoramento | `TensorBoard` | Integrado ao SB3, visualização de métricas |
-| Persistência | `JSON` por volta | Schema definido na seção 6 |
+| Modelo de análise | `scikit-learn` (Gradient Boosting) | Modelos por pista/aspecto — base dos futuros modelos especializados |
+| Monitoramento | `MLflow` | Tracking de experimentos e métricas de treino |
+| Persistência | `JSON` por volta + Supabase | Schema definido na seção 6 |
 | Saída futura | `ElevenLabs` ou `Azure TTS` | Integração de voz — Fase 6 |
 
 ### Fluxo do Pipeline (Módulo B)
@@ -541,5 +543,4 @@ SPLINE_POSITION_FIELD: str = "normalizedCarPosition"
 
 ---
 
-*Última atualização: 2026-03-05*  
-*Próxima fase ativa: FASE 1 — Shared Memory Reader*
+*Última atualização: 2026-06-22*
