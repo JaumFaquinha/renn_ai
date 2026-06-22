@@ -176,7 +176,7 @@
 5. **Expor `max_delta` como `@property`** no SectorModel — desacoplar `evaluate_model()` de atributo privado
 6. **Criar ADRs** em `docs/decisions/` para as decisões das sessões 2026-03-10 e 2026-03-18
 7. **Fase 6 real** — integrar ElevenLabs ou Azure TTS em `src/output/tts_integration.py`
-8. **Módulo A (futuro)** — agente RL com Gymnasium + Stable-Baselines3
+8. **Modelos especializados (futuro)** — novos modelos por aspecto do engenheiro (desgaste de pneus, combustível, estratégia). NÃO é piloto autônomo: o projeto é um assistente que lê os dados do jogo continuamente. (Visão revista 2026-06-21; RL/Gymnasium/SB3 descartados)
 
 ---
 
