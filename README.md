@@ -13,7 +13,7 @@
 
 ---
 
-## 🎥 Demonstração
+## Demonstração
 
 [![Assista à demonstração no YouTube](https://img.youtube.com/vi/S78818iTQAo/maxresdefault.jpg)](https://youtu.be/S78818iTQAo)
 
