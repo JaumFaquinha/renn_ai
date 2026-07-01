@@ -15,7 +15,7 @@
 
 ## Demonstração
 
-[![Assista à demonstração no YouTube](https://img.youtube.com/vi/S78818iTQAo/maxresdefault.jpg)](https://youtu.be/S78818iTQAo)
+[![Assista à demonstração no YouTube](https://img.youtube.com/vi/S78818iTQAo/hqdefault.jpg)](https://youtu.be/S78818iTQAo)
 
 > Clique na imagem acima para assistir ao vídeo no YouTube: <https://youtu.be/S78818iTQAo>
 
