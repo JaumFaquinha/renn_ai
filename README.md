@@ -13,6 +13,14 @@
 
 ---
 
+## 🎥 Demonstração
+
+[![Assista à demonstração no YouTube](https://img.youtube.com/vi/S78818iTQAo/maxresdefault.jpg)](https://youtu.be/S78818iTQAo)
+
+> Clique na imagem acima para assistir ao vídeo no YouTube: <https://youtu.be/S78818iTQAo>
+
+---
+
 ## Contexto e Problema
 
 No automobilismo profissional, cada piloto tem ao seu lado um **engenheiro de
@@ -349,5 +357,3 @@ Projeto de Portfólio · Católica SC
 ---
 
 <sub>Plataforma alvo: Windows · Python 3.11+ · Não utiliza LLMs em nenhuma camada</sub>
-</content>
-</invoke>
