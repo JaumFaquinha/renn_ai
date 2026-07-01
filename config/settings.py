@@ -113,11 +113,20 @@ TTS_PROVIDER: str = os.getenv("TTS_PROVIDER", "none")
 TTS_FALLBACK: str = os.getenv("TTS_FALLBACK", "pyttsx3")
 TTS_LANGUAGE: str = os.getenv("TTS_LANGUAGE", "pt-BR")
 TTS_VOICE_NAME: str = os.getenv("TTS_VOICE_NAME", "")
-# Truncamento de mensagens longas — reduz TTFB de síntese.
-# 220: acomoda a mensagem rica (contexto + pior zona + até 2 causas) sem cortar.
-TTS_MAX_MESSAGE_CHARS: int = int(os.getenv("TTS_MAX_MESSAGE_CHARS", "220"))
+# Cap de segurança para o texto enviado ao TTS. Acima disto, o corte é feito
+# no fim da última frase completa (nunca no meio) — ver TTSIntegration._truncate.
+# 350: acomoda a mensagem mais rica (contexto + pior zona + 2 causas ≈ 280 chars)
+# com folga, sem truncar. O edge_tts sintetiza mensagens longas sem problema
+# (fatia internamente em blocos de 4096 bytes).
+TTS_MAX_MESSAGE_CHARS: int = int(os.getenv("TTS_MAX_MESSAGE_CHARS", "350"))
 # Cooldown entre alertas (segundos) — evita overlap auditivo
 TTS_MIN_INTERVAL_S: float = float(os.getenv("TTS_MIN_INTERVAL_S", "3.0"))
+
+# Ganho de volume aplicado ao áudio antes do playback (edge_tts e elevenlabs,
+# que compartilham o pipeline soundfile→sounddevice). 1.0 = original; 2.0 ≈ 2x
+# de amplitude. O áudio é clampeado em [-1, 1] para evitar wrap-around; ganhos
+# muito altos (>3–4x) tendem a distorcer/clipar sinais já próximos do full scale.
+TTS_VOLUME_GAIN: float = float(os.getenv("TTS_VOLUME_GAIN", "1.0"))
 
 ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID: str = os.getenv("ELEVENLABS_VOICE_ID", "")

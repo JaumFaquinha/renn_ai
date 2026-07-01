@@ -31,6 +31,7 @@ Integração no run_session.py — inalterada:
 
 import logging
 import queue
+import re
 import threading
 import time
 from typing import Callable, Optional
@@ -51,13 +52,15 @@ try:
         TTS_MAX_MESSAGE_CHARS,
         TTS_MIN_INTERVAL_S,
         TTS_VOICE_NAME,
+        TTS_VOLUME_GAIN,
     )
 except ImportError:
     TTS_LANGUAGE = "pt-BR"
     TTS_VOICE_NAME = ""
     TTS_FALLBACK = "pyttsx3"
-    TTS_MAX_MESSAGE_CHARS = 140
+    TTS_MAX_MESSAGE_CHARS = 350
     TTS_MIN_INTERVAL_S = 3.0
+    TTS_VOLUME_GAIN = 1.0
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +109,7 @@ class TTSIntegration:
         self._voice_name = TTS_VOICE_NAME
         self._max_chars = TTS_MAX_MESSAGE_CHARS
         self._min_interval_s = TTS_MIN_INTERVAL_S
+        self._volume_gain = TTS_VOLUME_GAIN
         self._last_spoken_at: float = 0.0
 
         self._queue: queue.Queue[Optional[str]] = queue.Queue()
@@ -184,6 +188,7 @@ class TTSIntegration:
         if not message:
             return
 
+        message = self._normalize_for_speech(message)
         truncated = self._truncate(message)
 
         if self._provider == "none":
@@ -289,6 +294,27 @@ class TTSIntegration:
             return 0.0
         return self._synthesizer(message)
 
+    def _play_audio(self, audio_bytes: bytes) -> None:
+        """Decodifica o MP3 e toca, aplicando TTS_VOLUME_GAIN.
+
+        Compartilhado por edge_tts e elevenlabs (mesmo pipeline soundfile →
+        sounddevice). O ganho multiplica a amplitude e clampeia em [-1, 1] —
+        `sf.read` devolve float normalizado nessa faixa, então valores altos de
+        ganho saturam (clip) em vez de dar wrap-around. Bloqueia até o fim do
+        playback (`sd.wait`), preservando a serialização do worker.
+        """
+        import io
+
+        import sounddevice as sd
+        import soundfile as sf
+
+        data, sr = sf.read(io.BytesIO(audio_bytes))
+        gain = self._volume_gain
+        if gain and gain != 1.0:
+            data = (data * gain).clip(-1.0, 1.0)
+        sd.play(data, sr)
+        sd.wait()
+
     # ------------------------------------------------------------------
     # Provider: pyttsx3 (Windows SAPI5 — offline, sempre disponível)
     # ------------------------------------------------------------------
@@ -342,11 +368,9 @@ class TTSIntegration:
         # Exposto para stop() poder interromper um playback longo (cross-thread).
         self._pyttsx3_engine = engine
 
-        def synth(message: str) -> float:
-            t0 = time.monotonic()
-            engine.say(message)
+        def _run_and_wait() -> None:
             try:
-                engine.runAndWait()  # bloqueia ATÉ o áudio terminar — síncrono no SAPI5
+                engine.runAndWait()  # bloqueia ATÉ terminar — síncrono no SAPI5
             except RuntimeError:
                 # Bug conhecido do pyttsx3: "run loop already started" quando um
                 # loop anterior não foi encerrado. Encerra o loop preso e tenta
@@ -356,9 +380,41 @@ class TTSIntegration:
                 except Exception:
                     pass
                 engine.runAndWait()
-            # No SAPI5, runAndWait inclui síntese E playback. Não dá para separar
-            # sem reescrever via stream — reportamos o total como synthesis_ms.
-            return (time.monotonic() - t0) * 1000
+
+        def synth(message: str) -> float:
+            # Sem ganho (default): caminho nativo do SAPI5 (say/runAndWait) —
+            # mais rápido e interrompível via engine.stop() no stop().
+            if self._volume_gain == 1.0:
+                t0 = time.monotonic()
+                engine.say(message)
+                _run_and_wait()
+                # No SAPI5, runAndWait inclui síntese E playback. Não dá para
+                # separar sem stream — reportamos o total como synthesis_ms.
+                return (time.monotonic() - t0) * 1000
+
+            # Com ganho ≠ 1.0: o SAPI5 já está em volume 1.0 (máximo), então não
+            # dá para subir pela propriedade. Renderizamos para um WAV temporário
+            # (só síntese) e tocamos via _play_audio, que multiplica a amplitude
+            # e clampeia em [-1, 1] — mesmo pipeline de edge_tts/elevenlabs.
+            import os
+            import tempfile
+
+            t0 = time.monotonic()
+            fd, tmp_path = tempfile.mkstemp(suffix=".wav", prefix="renn_tts_")
+            os.close(fd)  # libera o handle para o SAPI5 escrever no arquivo
+            try:
+                engine.save_to_file(message, tmp_path)
+                _run_and_wait()
+                with open(tmp_path, "rb") as fh:
+                    audio_bytes = fh.read()
+            finally:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            t_synth = (time.monotonic() - t0) * 1000
+            self._play_audio(audio_bytes)
+            return t_synth
 
         return synth
 
@@ -369,7 +425,7 @@ class TTSIntegration:
     def _init_edge_tts(self) -> Optional[Callable[[str], float]]:
         try:
             import asyncio  # noqa: F401  (usado dentro do synth)
-            import edge_tts  # type: ignore
+            import edge_tts  # type: ignore  # noqa: F401  (probe de disponibilidade)
         except ImportError:
             logger.warning(
                 "edge-tts não instalado — execute: pip install edge-tts",
@@ -394,8 +450,6 @@ class TTSIntegration:
             import io
 
             import edge_tts
-            import sounddevice as sd
-            import soundfile as sf
 
             async def _stream_to_buffer() -> bytes:
                 buf = io.BytesIO()
@@ -409,9 +463,7 @@ class TTSIntegration:
             audio_bytes = asyncio.run(_stream_to_buffer())
             t_synth = (time.monotonic() - t0) * 1000
 
-            data, sr = sf.read(io.BytesIO(audio_bytes))
-            sd.play(data, sr)
-            sd.wait()
+            self._play_audio(audio_bytes)
             return t_synth
 
         return synth
@@ -446,11 +498,6 @@ class TTSIntegration:
         client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
 
         def synth(message: str) -> float:
-            import io
-
-            import sounddevice as sd
-            import soundfile as sf
-
             t0 = time.monotonic()
             # Flash v2.5 — modelo mais rápido do ElevenLabs. Os ~75ms divulgados
             # são tempo de INFERÊNCIA no servidor; o end-to-end percebido fica em
@@ -478,9 +525,7 @@ class TTSIntegration:
                 },
             )
 
-            data, sr = sf.read(io.BytesIO(audio_bytes))
-            sd.play(data, sr)
-            sd.wait()
+            self._play_audio(audio_bytes)
             return t_synth
 
         return synth
@@ -535,15 +580,52 @@ class TTSIntegration:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _truncate(self, message: str) -> str:
-        """Trunca a mensagem para reduzir TTFB de síntese.
+    # Vírgula decimal entre dígitos (ex.: "0,45"). Só esta forma é trocada —
+    # vírgulas de pontuação ("Parabólica, curva rápida") viram pausa natural.
+    _DECIMAL_COMMA_RE = re.compile(r"(\d),(\d)")
 
-        Engenheiro de corrida fala curto: '0,3s perdidos na Parabolica,
-        frenagem tardia' (52 chars) é o tom alvo.
+    def _normalize_for_speech(self, message: str) -> str:
+        """Normaliza o texto para síntese, removendo ambiguidades que quebram
+        o TTS (notadamente o ElevenLabs).
+
+        A vírgula decimal do pt-BR ("0,45") é reinterpretada por normalizadores
+        de número centrados em inglês (onde vírgula é separador de milhar),
+        cortando ou lendo errado o número. Trocamos apenas a vírgula *entre
+        dígitos* pela palavra falada "vírgula" — "0,45 s" → "0 vírgula 45 s",
+        que é lido corretamente ("zero vírgula quarenta e cinco") em todos os
+        providers. Vírgulas de pontuação permanecem intactas (viram pausa).
+        """
+        return self._DECIMAL_COMMA_RE.sub(r"\1 vírgula \2", message)
+
+    def _truncate(self, message: str) -> str:
+        """Limita o tamanho do texto enviado ao TTS preservando frases inteiras.
+
+        Mensagens dentro do limite (`TTS_MAX_MESSAGE_CHARS`) passam intactas —
+        e o limite é dimensionado para acomodar a mensagem mais rica sem cortar.
+        Acima do limite, o corte é feito no fim da última frase completa
+        (`.`, `!` ou `?`) dentro da janela, nunca no meio de uma frase. Só se
+        não houver fim de frase no trecho é que recai no corte por palavra com
+        reticências.
+
+        Obs.: em pt-BR os decimais usam vírgula ('0,3s'), então o ponto é sempre
+        fim de frase — não há risco de cortar dentro de um número.
         """
         if len(message) <= self._max_chars:
             return message
-        cut = message[: self._max_chars].rsplit(" ", 1)[0]
+
+        window = message[: self._max_chars]
+        # Preferir cortar no fim da última frase completa dentro da janela.
+        sentence_end = max(
+            window.rfind(". "), window.rfind("! "), window.rfind("? ")
+        )
+        # Considerar também um terminador exatamente no fim da janela.
+        if window[-1:] in ".!?":
+            sentence_end = max(sentence_end, len(window) - 1)
+        if sentence_end > 0:
+            return window[: sentence_end + 1].rstrip()
+
+        # Sem fim de frase no trecho: recai no corte por palavra.
+        cut = window.rsplit(" ", 1)[0]
         return cut + "..."
 
     def _validate(self) -> None:
